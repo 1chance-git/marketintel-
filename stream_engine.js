@@ -129,6 +129,22 @@ const CAPTURE_HEIGHT = 720;
 const CAPTURE_FPS = 30;
 const FRAME_INTERVAL_MS = 1000 / CAPTURE_FPS;
 
+// ---------------------------------------------------------------------------
+// YouTube RTMP output adapter (Block 8)
+//
+// This constant is the ONLY thing that switches the video pipeline's output
+// destination. It must stay `null` in this repository — never commit a real
+// RTMP URL or stream key here. The real value (rtmp://a.rtmp.youtube.com/
+// live2/<STREAM_KEY>) should only ever be pasted in locally, on the machine
+// actually going live, after YouTube Live activation is complete, and never
+// pushed to version control (e.g. export it as an environment variable and
+// read it there instead of hardcoding it, if you wire this up for real).
+//
+//   YOUTUBE_LIVE_URL === null        -> MODE 1: encode to local_stream_test.mp4
+//   YOUTUBE_LIVE_URL === "rtmp://..." -> MODE 2: stream out via FFmpeg FLV/RTMP
+// ---------------------------------------------------------------------------
+const YOUTUBE_LIVE_URL = null;
+
 function startLocalServer(rootDir, port = 0) {
   const mimeTypes = {
     ".html": "text/html; charset=utf-8",
@@ -170,19 +186,36 @@ function startLocalServer(rootDir, port = 0) {
   });
 }
 
-function spawnFfmpeg(outputPath) {
-  const args = [
-    "-y",
-    "-f", "image2pipe",
-    "-framerate", String(CAPTURE_FPS),
-    "-i", "-",
+function resolveOutputTarget(localOutputPath) {
+  if (YOUTUBE_LIVE_URL) {
+    return { destination: YOUTUBE_LIVE_URL, mode: "rtmp" };
+  }
+  return { destination: localOutputPath, mode: "local" };
+}
+
+function spawnFfmpeg({ destination, mode }) {
+  const encodingArgs = [
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-pix_fmt", "yuv420p",
     "-r", String(CAPTURE_FPS),
     "-s", `${CAPTURE_WIDTH}x${CAPTURE_HEIGHT}`,
-    outputPath,
   ];
+
+  const args = [
+    "-y",
+    "-f", "image2pipe",
+    "-framerate", String(CAPTURE_FPS),
+    "-i", "-",
+    ...encodingArgs,
+  ];
+
+  if (mode === "rtmp") {
+    // RTMP requires an FLV container; the destination is an RTMP URL, not a file path.
+    args.push("-f", "flv", destination);
+  } else {
+    args.push(destination);
+  }
 
   const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
   return ffmpeg;
@@ -197,6 +230,7 @@ export class VideoEngine {
     this.durationMs = durationMs;
     this.outputPath = outputPath;
     this.rootDir = rootDir;
+    this.outputTarget = resolveOutputTarget(this.outputPath);
 
     this.server = null;
     this.browser = null;
@@ -258,7 +292,7 @@ export class VideoEngine {
     }
 
     try {
-      this.ffmpeg = spawnFfmpeg(this.outputPath);
+      this.ffmpeg = spawnFfmpeg(this.outputTarget);
     } catch (err) {
       console.error(`[VIDEO_ENGINE] FFmpeg startup failed: ${err.message}`);
       await this.shutdown(1);
@@ -291,7 +325,11 @@ export class VideoEngine {
       return;
     }
 
-    console.log(`[VIDEO_ENGINE] Capturing at ${CAPTURE_FPS}fps for ${this.durationMs / 1000}s -> ${this.outputPath}`);
+    // Never log the RTMP destination — it embeds the YouTube stream key.
+    const destinationLabel = this.outputTarget.mode === "rtmp"
+      ? "YouTube RTMP (destination redacted)"
+      : this.outputTarget.destination;
+    console.log(`[VIDEO_ENGINE] Capturing at ${CAPTURE_FPS}fps for ${this.durationMs / 1000}s -> ${destinationLabel}`);
     this.capturing = true;
     this.startTime = Date.now();
     this.scheduleNextFrame();
