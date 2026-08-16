@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>MarketIntel Broadcast Dashboard</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 1280px;
+    height: 720px;
+    overflow: hidden;
+    background: #08090d;
+    color: #e6e8f0;
+    font-family: "Segoe UI", Arial, sans-serif;
+  }
+
+  #stage {
+    position: relative;
+    width: 1280px;
+    height: 720px;
+    background: #08090d;
+    display: flex;
+    box-sizing: border-box;
+  }
+
+  .pane {
+    box-sizing: border-box;
+    height: 100%;
+  }
+
+  #left-pane {
+    width: 70%;
+    border-right: 1px solid #1f2438;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+  }
+
+  #right-pane {
+    width: 30%;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+  }
+
+  .chart-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid #1f2438;
+    font-size: 14px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #8b93b0;
+  }
+
+  #chart-area {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #4a5170;
+    font-size: 16px;
+    letter-spacing: 0.04em;
+  }
+
+  .card {
+    flex: 1;
+    box-sizing: border-box;
+    border-bottom: 1px solid #1f2438;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #right-pane .card:last-child {
+    border-bottom: none;
+  }
+
+  .card-title {
+    padding: 12px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    border-bottom: 1px solid #1f2438;
+    color: #c7cbe0;
+  }
+
+  .card-body {
+    flex: 1;
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .empty-state {
+    color: #4a5170;
+    font-size: 13px;
+    letter-spacing: 0.02em;
+  }
+
+  #watermark {
+    position: absolute;
+    bottom: 8px;
+    left: 0;
+    width: 100%;
+    text-align: center;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: #3a4058;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="left-pane" class="pane">
+    <div class="chart-header">Market Data</div>
+    <div id="chart-area">Chart area — live feed not yet connected</div>
+  </div>
+
+  <div id="right-pane" class="pane">
+    <div class="card" id="card-macro">
+      <div class="card-title">📊 ETF FLOWS &amp; SYSTEM MACRO</div>
+      <div class="card-body">
+        <div class="empty-state" id="macro-empty-state">Waiting for macro intelligence...</div>
+      </div>
+    </div>
+
+    <div class="card" id="card-sentiment">
+      <div class="card-title">📡 X EARLY NARRATIVES &amp; SENTIMENT</div>
+      <div class="card-body">
+        <div class="empty-state" id="sentiment-empty-state">Waiting for sentiment intelligence...</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="watermark">NOT FINANCIAL ADVICE • LIVE DATA INTERFACE</div>
+</div>
+
+<script>
+  // Placeholder for future grok_data.json driven rendering.
+  // No network calls, no data fetching, no Supabase/Binance connections here.
+</script>
+</body>
+</html>
