@@ -1,0 +1,17 @@
+{
+  "name": "marketintel-",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node stream_engine.js",
+    "check": "node --check src/stream-engine/index.js && node --check supabase_client.js && node --check stream_engine.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "puppeteer": "^23.6.0"
+  }
+}

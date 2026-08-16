@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marketintel.local/schemas/grok-signal.json",
+  "title": "GrokSignal",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": ["integer", "string", "null"]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "etf_flows": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 200
+    },
+    "system_macro": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 200
+    },
+    "x_narratives": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 200
+    },
+    "sentiment": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 200
+    }
+  },
+  "required": [
+    "timestamp",
+    "etf_flows",
+    "system_macro",
+    "x_narratives",
+    "sentiment"
+  ],
+  "additionalProperties": false
+}
