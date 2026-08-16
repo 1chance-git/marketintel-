@@ -47,20 +47,85 @@
   .chart-header {
     padding: 14px 18px;
     border-bottom: 1px solid #1f2438;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .chart-header-label {
     font-size: 14px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: #8b93b0;
   }
 
+  #price-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  #btc-price {
+    font-size: 22px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: #e6e8f0;
+    transition: color 120ms ease-out;
+  }
+
+  #btc-price.flash-up {
+    color: #34d399;
+  }
+
+  #btc-price.flash-down {
+    color: #f87171;
+  }
+
+  #connection-status {
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 3px;
+    border: 1px solid #1f2438;
+    color: #8b93b0;
+  }
+
+  #connection-status.status-live {
+    color: #34d399;
+    border-color: #1c4a3a;
+  }
+
+  #connection-status.status-connecting {
+    color: #d4b34a;
+    border-color: #4a3f1c;
+  }
+
+  #connection-status.status-down {
+    color: #f87171;
+    border-color: #4a1f1f;
+  }
+
   #chart-area {
     flex: 1;
+    position: relative;
+  }
+
+  #chart-container {
+    position: absolute;
+    inset: 0;
+  }
+
+  #chart-fallback {
+    position: absolute;
+    inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     color: #4a5170;
-    font-size: 16px;
+    font-size: 14px;
     letter-spacing: 0.04em;
+    pointer-events: none;
   }
 
   .card {
@@ -100,6 +165,29 @@
     letter-spacing: 0.02em;
   }
 
+  .signal-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    max-height: 100%;
+    overflow-y: auto;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .signal-list li {
+    padding: 6px 0;
+    border-bottom: 1px solid #1f2438;
+    color: #c7cbe0;
+    text-align: left;
+    word-break: break-word;
+  }
+
+  .signal-list li:last-child {
+    border-bottom: none;
+  }
+
   #watermark {
     position: absolute;
     bottom: 8px;
@@ -116,22 +204,33 @@
 <body>
 <div id="stage">
   <div id="left-pane" class="pane">
-    <div class="chart-header">Market Data</div>
-    <div id="chart-area">Chart area — live feed not yet connected</div>
+    <div class="chart-header">
+      <span class="chart-header-label">BTC/USDT · 1M</span>
+      <div id="price-row">
+        <span id="btc-price">--</span>
+        <span id="connection-status" class="status-connecting">Connecting...</span>
+      </div>
+    </div>
+    <div id="chart-area">
+      <div id="chart-container"></div>
+      <div id="chart-fallback">Waiting for live BTC/USDT feed...</div>
+    </div>
   </div>
 
   <div id="right-pane" class="pane">
     <div class="card" id="card-macro">
       <div class="card-title">📊 ETF FLOWS &amp; SYSTEM MACRO</div>
-      <div class="card-body">
+      <div class="card-body" id="macro-body">
         <div class="empty-state" id="macro-empty-state">Waiting for macro intelligence...</div>
+        <ul class="signal-list" id="macro-list" hidden></ul>
       </div>
     </div>
 
     <div class="card" id="card-sentiment">
       <div class="card-title">📡 X EARLY NARRATIVES &amp; SENTIMENT</div>
-      <div class="card-body">
+      <div class="card-body" id="sentiment-body">
         <div class="empty-state" id="sentiment-empty-state">Waiting for sentiment intelligence...</div>
+        <ul class="signal-list" id="sentiment-list" hidden></ul>
       </div>
     </div>
   </div>
@@ -139,9 +238,246 @@
   <div id="watermark">NOT FINANCIAL ADVICE • LIVE DATA INTERFACE</div>
 </div>
 
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <script>
-  // Placeholder for future grok_data.json driven rendering.
-  // No network calls, no data fetching, no Supabase/Binance connections here.
+  // Placeholder for future grok_data.json driven rendering (macro/sentiment cards).
+  // No Supabase logic here — that lives in stream_engine.js / supabase_client.js.
+
+  (function () {
+    const SYMBOL = "btcusdt";
+    const STREAM_URL = `wss://stream.binance.com:9443/ws/${SYMBOL}@kline_1m`;
+    const RECONNECT_BASE_DELAY_MS = 1000;
+    const RECONNECT_MAX_DELAY_MS = 30000;
+
+    const priceEl = document.getElementById("btc-price");
+    const statusEl = document.getElementById("connection-status");
+    const fallbackEl = document.getElementById("chart-fallback");
+    const containerEl = document.getElementById("chart-container");
+
+    let lastPrice = null;
+    let flashTimeout = null;
+    let reconnectAttempts = 0;
+    let reconnectTimer = null;
+    let socket = null;
+    let currentCandle = null;
+
+    const chart = LightweightCharts.createChart(containerEl, {
+      layout: {
+        background: { type: "solid", color: "#08090d" },
+        textColor: "#8b93b0",
+      },
+      grid: {
+        vertLines: { color: "#1f2438" },
+        horzLines: { color: "#1f2438" },
+      },
+      rightPriceScale: {
+        borderColor: "#1f2438",
+      },
+      timeScale: {
+        borderColor: "#1f2438",
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+      },
+      width: containerEl.clientWidth,
+      height: containerEl.clientHeight,
+    });
+
+    const candleSeries = chart.addCandlestickSeries({
+      upColor: "#34d399",
+      downColor: "#f87171",
+      borderVisible: false,
+      wickUpColor: "#34d399",
+      wickDownColor: "#f87171",
+    });
+
+    function resizeChart() {
+      chart.resize(containerEl.clientWidth, containerEl.clientHeight);
+    }
+    window.addEventListener("resize", resizeChart);
+
+    function setStatus(state, label) {
+      statusEl.textContent = label;
+      statusEl.className = state;
+    }
+
+    function flashPrice(direction) {
+      priceEl.classList.remove("flash-up", "flash-down");
+      // Force reflow so re-adding the same class re-triggers the transition.
+      void priceEl.offsetWidth;
+      priceEl.classList.add(direction === "up" ? "flash-up" : "flash-down");
+      if (flashTimeout) clearTimeout(flashTimeout);
+      flashTimeout = setTimeout(() => {
+        priceEl.classList.remove("flash-up", "flash-down");
+      }, 500);
+    }
+
+    function updatePrice(newPrice) {
+      const formatted = newPrice.toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+      priceEl.textContent = formatted;
+
+      if (lastPrice !== null) {
+        if (newPrice > lastPrice) flashPrice("up");
+        else if (newPrice < lastPrice) flashPrice("down");
+      }
+      lastPrice = newPrice;
+    }
+
+    function handleKline(kline) {
+      const candle = {
+        time: Math.floor(kline.t / 1000),
+        open: parseFloat(kline.o),
+        high: parseFloat(kline.h),
+        low: parseFloat(kline.l),
+        close: parseFloat(kline.c),
+      };
+
+      candleSeries.update(candle);
+      currentCandle = candle;
+      fallbackEl.style.display = "none";
+      updatePrice(candle.close);
+    }
+
+    function scheduleReconnect() {
+      if (reconnectTimer) return;
+      const delay = Math.min(
+        RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempts),
+        RECONNECT_MAX_DELAY_MS
+      );
+      reconnectAttempts += 1;
+      setStatus("status-down", "Reconnecting...");
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    }
+
+    function connect() {
+      setStatus("status-connecting", "Connecting...");
+
+      try {
+        socket = new WebSocket(STREAM_URL);
+      } catch (err) {
+        scheduleReconnect();
+        return;
+      }
+
+      socket.addEventListener("open", () => {
+        reconnectAttempts = 0;
+        setStatus("status-live", "Live");
+      });
+
+      socket.addEventListener("message", (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload && payload.k) {
+            handleKline(payload.k);
+          }
+        } catch (err) {
+          // Ignore malformed frames; wait for the next valid message.
+        }
+      });
+
+      socket.addEventListener("close", () => {
+        setStatus("status-down", "Disconnected");
+        scheduleReconnect();
+      });
+
+      socket.addEventListener("error", () => {
+        // The subsequent "close" event drives reconnect scheduling.
+        if (socket) socket.close();
+      });
+    }
+
+    connect();
+  })();
+</script>
+<script>
+  // Grok/sentiment data display — reads ./grok_data.json on a 5s poll.
+  // Does not touch the Binance WebSocket/chart logic above, and does not
+  // reload the page or refresh the layout.
+
+  (function () {
+    const POLL_INTERVAL_MS = 5000;
+    const DATA_URL = "./grok_data.json";
+
+    const macroEmptyEl = document.getElementById("macro-empty-state");
+    const macroListEl = document.getElementById("macro-list");
+    const sentimentEmptyEl = document.getElementById("sentiment-empty-state");
+    const sentimentListEl = document.getElementById("sentiment-list");
+
+    function normalizeArray(value) {
+      return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
+    }
+
+    function renderList(listEl, emptyEl, items) {
+      listEl.textContent = "";
+
+      if (!items.length) {
+        listEl.hidden = true;
+        emptyEl.hidden = false;
+        return;
+      }
+
+      emptyEl.hidden = true;
+      listEl.hidden = false;
+
+      const fragment = document.createDocumentFragment();
+      items.forEach((text) => {
+        const li = document.createElement("li");
+        li.textContent = text; // textContent only — never innerHTML — to prevent HTML injection.
+        fragment.appendChild(li);
+      });
+      listEl.appendChild(fragment);
+    }
+
+    function renderMacro(etfFlows, systemMacro) {
+      const combined = [...normalizeArray(etfFlows), ...normalizeArray(systemMacro)];
+      renderList(macroListEl, macroEmptyEl, combined);
+    }
+
+    function renderSentiment(xNarratives, sentiment) {
+      const combined = [...normalizeArray(xNarratives), ...normalizeArray(sentiment)];
+      renderList(sentimentListEl, sentimentEmptyEl, combined);
+    }
+
+    async function pollGrokData() {
+      let response;
+      try {
+        response = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: "no-store" });
+      } catch (err) {
+        // Network/read failure — leave current display intact, try again next cycle.
+        return;
+      }
+
+      if (!response.ok) {
+        return;
+      }
+
+      let data;
+      try {
+        data = await response.json();
+      } catch (err) {
+        // Malformed JSON — ignore this cycle, keep previous valid display.
+        return;
+      }
+
+      if (!data || typeof data !== "object") {
+        return;
+      }
+
+      renderMacro(data.etf_flows, data.system_macro);
+      renderSentiment(data.x_narratives, data.sentiment);
+    }
+
+    pollGrokData();
+    setInterval(pollGrokData, POLL_INTERVAL_MS);
+  })();
 </script>
 </body>
 </html>
