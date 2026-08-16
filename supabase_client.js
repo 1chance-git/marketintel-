@@ -1,7 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 
-export const SUPABASE_URL = "YOUR_SUPABASE_URL";
-export const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
+// anon/publishable key — public by design (RLS on grok_signals restricts it
+// to read-only SELECT access), safe to keep in version control.
+export const SUPABASE_URL = "https://zzscfmnqgccuwcfpicob.supabase.co";
+export const SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp6c2NmbW5xZ2NjdXdjZnBpY29iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2MDI1MTMsImV4cCI6MjEwMDE3ODUxM30.ahbBjwtB_g08FyiFFndSz7uWUqZnNdO7m59BzsyyiAM";
 
 let supabase = null;
 
