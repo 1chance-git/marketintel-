@@ -4,3 +4,4 @@ node_modules/
 data/grok_data.json
 output/
 *.log
+*.mp4

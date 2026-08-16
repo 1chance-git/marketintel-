@@ -3,14 +3,21 @@ import { createClient } from "@supabase/supabase-js";
 export const SUPABASE_URL = "YOUR_SUPABASE_URL";
 export const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let supabase = null;
+
+function getClient() {
+  if (!supabase) {
+    supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+  return supabase;
+}
 
 function normalizeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
 export async function fetchLatestGrokSignal() {
-  const { data, error } = await supabase
+  const { data, error } = await getClient()
     .from("grok_signals")
     .select("id, timestamp, etf_flows, system_macro, x_narratives, sentiment")
     .order("timestamp", { ascending: false })
