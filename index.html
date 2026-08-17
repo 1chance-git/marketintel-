@@ -925,6 +925,7 @@
       }
 
       socket.addEventListener("open", () => {
+        console.log("[DIAG:ohlc] WS open");
         reconnectAttempts = 0;
         setStatus("status-live", "Live");
         socket.send(JSON.stringify({
@@ -951,34 +952,49 @@
         });
       });
 
+      const diagSeenOhlc = new Set();
       socket.addEventListener("message", (event) => {
         try {
           const payload = JSON.parse(event.data);
+          if (!diagSeenOhlc.has("__raw__")) {
+            diagSeenOhlc.add("__raw__");
+            console.log(`[DIAG:ohlc] first raw message: ${event.data.slice(0, 500)}`);
+          }
 
           // Explicit per-symbol subscription rejection (e.g. pair not listed).
           if (payload && payload.method === "subscribe" && payload.success === false && payload.result) {
+            console.log(`[DIAG:ohlc] subscribe rejected: ${JSON.stringify(payload.result)}`);
             const ticker = TICKER_OF[payload.result.symbol];
             if (ticker) markAssetUnavailable(ticker);
             return;
+          }
+          if (payload && payload.method === "subscribe") {
+            console.log(`[DIAG:ohlc] subscribe ack: ${JSON.stringify(payload)}`);
           }
 
           if (payload && payload.channel === "ohlc" && Array.isArray(payload.data)) {
             payload.data.forEach((entry) => {
               const symbol = entry && entry.symbol;
+              if (symbol && !diagSeenOhlc.has(symbol)) {
+                diagSeenOhlc.add(symbol);
+                console.log(`[DIAG:ohlc] first candle for ${symbol}: ${JSON.stringify(entry).slice(0, 300)}`);
+              }
               if (symbol) handleCandle(symbol, entry);
             });
           }
         } catch (err) {
-          // Ignore malformed frames; wait for the next valid message.
+          console.log(`[DIAG:ohlc] message parse error: ${err.message}`);
         }
       });
 
       socket.addEventListener("close", () => {
+        console.log("[DIAG:ohlc] WS close");
         setStatus("status-down", "Disconnected");
         scheduleReconnect();
       });
 
       socket.addEventListener("error", () => {
+        console.log("[DIAG:ohlc] WS error");
         // The subsequent "close" event drives reconnect scheduling.
         if (socket) socket.close();
       });
@@ -1292,6 +1308,7 @@
       }
 
       socket.addEventListener("open", () => {
+        console.log("[DIAG:ticker] WS open");
         reconnectAttempts = 0;
         socket.send(JSON.stringify({
           method: "subscribe",
@@ -1308,35 +1325,54 @@
         ASSETS.forEach((asset) => {
           if (receivedData[asset.ticker]) return;
           unavailableTimers[asset.ticker] = setTimeout(() => {
+            console.log(`[DIAG:ticker] unavailable-timeout fired for ${asset.ticker}`);
             markUnavailable(asset.ticker);
           }, UNAVAILABLE_TIMEOUT_MS);
         });
       });
 
+      const diagSeenTickers = new Set();
       socket.addEventListener("message", (event) => {
         try {
           const payload = JSON.parse(event.data);
+          if (!diagSeenTickers.has("__raw__")) {
+            diagSeenTickers.add("__raw__");
+            console.log(`[DIAG:ticker] first raw message: ${event.data.slice(0, 500)}`);
+          }
 
           // Explicit per-symbol subscription rejection (e.g. pair not listed).
           if (payload && payload.method === "subscribe" && payload.success === false && payload.result) {
+            console.log(`[DIAG:ticker] subscribe rejected: ${JSON.stringify(payload.result)}`);
             const asset = ASSETS.find((a) => a.symbol === payload.result.symbol);
             if (asset) markUnavailable(asset.ticker);
             return;
           }
+          if (payload && payload.method === "subscribe") {
+            console.log(`[DIAG:ticker] subscribe ack: ${JSON.stringify(payload)}`);
+          }
 
           if (payload && payload.channel === "ticker" && Array.isArray(payload.data)) {
+            payload.data.forEach((entry) => {
+              const sym = entry && entry.symbol;
+              if (sym && !diagSeenTickers.has(sym)) {
+                diagSeenTickers.add(sym);
+                console.log(`[DIAG:ticker] first data for ${sym}: ${JSON.stringify(entry).slice(0, 300)}`);
+              }
+            });
             payload.data.forEach(handleTickerEntry);
           }
         } catch (err) {
-          // Ignore malformed frames; wait for the next valid message.
+          console.log(`[DIAG:ticker] message parse error: ${err.message}`);
         }
       });
 
       socket.addEventListener("close", () => {
+        console.log("[DIAG:ticker] WS close");
         scheduleReconnect();
       });
 
       socket.addEventListener("error", () => {
+        console.log("[DIAG:ticker] WS error");
         if (socket) socket.close();
       });
     }

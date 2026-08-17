@@ -285,6 +285,9 @@ export class VideoEngine {
         console.error(`[VIDEO_ENGINE] Page crashed: ${err.message}`);
         this.shutdown(1);
       });
+      this.page.on("console", (msg) => {
+        console.log(`[PAGE:${msg.type()}] ${msg.text()}`);
+      });
 
       const port = this.server.address().port;
       await this.page.goto(`http://127.0.0.1:${port}/index.html`, {
