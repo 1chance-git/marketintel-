@@ -143,11 +143,28 @@
 
   .card-title {
     padding: 12px 16px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid #1f2438;
+  }
+
+  .card-title-label {
     font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.03em;
-    border-bottom: 1px solid #1f2438;
     color: #c7cbe0;
+  }
+
+  .card-updated {
+    font-size: 10.5px;
+    color: #5b6274;
+    white-space: nowrap;
+  }
+
+  .card-updated.stale {
+    color: #d4914a;
   }
 
   .card-body {
@@ -219,7 +236,10 @@
 
   <div id="right-pane" class="pane">
     <div class="card" id="card-macro">
-      <div class="card-title">📊 ETF FLOWS &amp; SYSTEM MACRO</div>
+      <div class="card-title">
+        <span class="card-title-label">📊 ETF FLOWS &amp; SYSTEM MACRO</span>
+        <span class="card-updated" id="macro-updated"></span>
+      </div>
       <div class="card-body" id="macro-body">
         <div class="empty-state" id="macro-empty-state">Waiting for macro intelligence...</div>
         <ul class="signal-list" id="macro-list" hidden></ul>
@@ -227,7 +247,10 @@
     </div>
 
     <div class="card" id="card-sentiment">
-      <div class="card-title">📡 X EARLY NARRATIVES &amp; SENTIMENT</div>
+      <div class="card-title">
+        <span class="card-title-label">📡 X EARLY NARRATIVES &amp; SENTIMENT</span>
+        <span class="card-updated" id="sentiment-updated"></span>
+      </div>
       <div class="card-body" id="sentiment-body">
         <div class="empty-state" id="sentiment-empty-state">Waiting for sentiment intelligence...</div>
         <ul class="signal-list" id="sentiment-list" hidden></ul>
@@ -410,6 +433,41 @@
     const macroListEl = document.getElementById("macro-list");
     const sentimentEmptyEl = document.getElementById("sentiment-empty-state");
     const sentimentListEl = document.getElementById("sentiment-list");
+    const macroUpdatedEl = document.getElementById("macro-updated");
+    const sentimentUpdatedEl = document.getElementById("sentiment-updated");
+
+    const STALE_THRESHOLD_MS = 26 * 60 * 60 * 1000; // daily cadence + buffer
+    let lastSignalTimestamp = null;
+
+    function formatAge(timestamp) {
+      const then = new Date(timestamp).getTime();
+      if (Number.isNaN(then)) return "";
+
+      const diffMs = Date.now() - then;
+      if (diffMs < 0) return "just now";
+
+      const minutes = Math.floor(diffMs / 60000);
+      if (minutes < 1) return "just now";
+      if (minutes < 60) return `Updated ${minutes}m ago`;
+
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `Updated ${hours}h ago`;
+
+      const days = Math.floor(hours / 24);
+      return `Updated ${days}d ago`;
+    }
+
+    function updateAgeLabels() {
+      if (!lastSignalTimestamp) return;
+
+      const label = formatAge(lastSignalTimestamp);
+      const isStale = Date.now() - new Date(lastSignalTimestamp).getTime() > STALE_THRESHOLD_MS;
+
+      [macroUpdatedEl, sentimentUpdatedEl].forEach((el) => {
+        el.textContent = label;
+        el.classList.toggle("stale", isStale);
+      });
+    }
 
     function normalizeArray(value) {
       return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
@@ -473,10 +531,18 @@
 
       renderMacro(data.etf_flows, data.system_macro);
       renderSentiment(data.x_narratives, data.sentiment);
+
+      if (typeof data.timestamp === "string" && data.timestamp) {
+        lastSignalTimestamp = data.timestamp;
+      }
+      updateAgeLabels();
     }
 
     pollGrokData();
     setInterval(pollGrokData, POLL_INTERVAL_MS);
+    // Age labels ("Updated Xh ago") drift with real time even between
+    // polls, so refresh them independently on a slower cadence.
+    setInterval(updateAgeLabels, 30_000);
   })();
 </script>
 </body>
