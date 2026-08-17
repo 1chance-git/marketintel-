@@ -294,6 +294,10 @@ export class VideoEngine {
         waitUntil: "networkidle0",
         timeout: 30_000,
       });
+
+      console.log("[DIAG:node] page.goto resolved");
+      await this.page.evaluate(() => console.log("DIAG_EVALUATE_TEST_" + Date.now()));
+      console.log("[DIAG:node] page.evaluate console.log call completed");
     } catch (err) {
       console.error(`[VIDEO_ENGINE] Failed to open dashboard: ${err.message}`);
       await this.shutdown(1);
