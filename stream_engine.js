@@ -144,7 +144,7 @@ const FRAME_INTERVAL_MS = 1000 / CAPTURE_FPS;
 // ---------------------------------------------------------------------------
 const YOUTUBE_LIVE_URL = process.env.YOUTUBE_LIVE_URL || null;
 
-function startLocalServer(rootDir, { getLatestFrame } = {}) {
+function startLocalServer(rootDir) {
   const mimeTypes = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -153,26 +153,8 @@ function startLocalServer(rootDir, { getLatestFrame } = {}) {
   };
 
   const server = http.createServer(async (req, res) => {
-    const urlPath = decodeURIComponent(req.url.split("?")[0]);
-
-    // TEMPORARY debug route: serves whatever frame the capture engine most
-    // recently pulled off the CDP screencast, so the actual rendered
-    // dashboard (chart included) can be checked from a browser without
-    // relying on deploy-log scraping or Railway's start-command overrides.
-    // Remove once chart verification is no longer needed.
-    if (urlPath === "/debug/last-frame.png") {
-      const buffer = typeof getLatestFrame === "function" ? getLatestFrame() : null;
-      if (!buffer) {
-        res.writeHead(503, { "Content-Type": "text/plain" });
-        res.end("No frame captured yet");
-        return;
-      }
-      res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
-      res.end(buffer);
-      return;
-    }
-
     try {
+      const urlPath = decodeURIComponent(req.url.split("?")[0]);
       const relPath = urlPath === "/" ? "/index.html" : urlPath;
       const safePath = path.normalize(relPath).replace(/^(\.\.[/\\])+/, "");
       const filePath = path.join(rootDir, safePath);
@@ -193,12 +175,8 @@ function startLocalServer(rootDir, { getLatestFrame } = {}) {
     }
   });
 
-  // Bind to 0.0.0.0 only when Railway (or similar) has assigned a public
-  // PORT, so a generated domain can actually reach this server. Otherwise
-  // stay on loopback with a random port, as before, for local/internal use.
-  const usePublicPort = Boolean(process.env.PORT);
-  const host = usePublicPort ? "0.0.0.0" : "127.0.0.1";
-  const port = usePublicPort ? Number(process.env.PORT) : 0;
+  const host = "127.0.0.1";
+  const port = 0;
 
   return new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -229,6 +207,7 @@ function spawnFfmpeg({ destination, mode }) {
   const args = [
     "-y",
     "-f", "image2pipe",
+    "-vcodec", "mjpeg",
     "-framerate", String(CAPTURE_FPS),
     "-i", "-",
     ...encodingArgs,
@@ -267,15 +246,15 @@ export class VideoEngine {
     this.startTime = null;
     this.captureTimer = null;
     this.latestFrameBuffer = null;
+    this.freshFrameCount = 0;
+    this.statsTimer = null;
   }
 
   async run() {
     console.log("[VIDEO_ENGINE] Starting");
 
     try {
-      const { server, port } = await startLocalServer(this.rootDir, {
-        getLatestFrame: () => this.latestFrameBuffer,
-      });
+      const { server, port } = await startLocalServer(this.rootDir);
       this.server = server;
 
       this.browser = await puppeteer.launch({
@@ -370,6 +349,25 @@ export class VideoEngine {
     this.capturing = true;
     this.startTime = Date.now();
     this.scheduleEncodeTick();
+    this.startStatsLogger();
+  }
+
+  // Periodic (not per-frame) throughput summary: how often CDP actually
+  // delivers a fresh repainted frame, vs. the fixed CAPTURE_FPS rate we
+  // encode at regardless. Useful for judging real capture performance
+  // without spamming logs on every single frame.
+  startStatsLogger() {
+    let lastCount = 0;
+    const STATS_INTERVAL_MS = 10_000;
+    this.statsTimer = setInterval(() => {
+      const delta = this.freshFrameCount - lastCount;
+      lastCount = this.freshFrameCount;
+      const fps = (delta / (STATS_INTERVAL_MS / 1000)).toFixed(1);
+      console.log(`[VIDEO_ENGINE] Stats: ${delta} fresh frames in ${STATS_INTERVAL_MS / 1000}s (~${fps}fps arrival), ${this.frameCount} total encoded`);
+    }, STATS_INTERVAL_MS);
+    if (typeof this.statsTimer.unref === "function") {
+      this.statsTimer.unref();
+    }
   }
 
   // Uses the Chrome DevTools Protocol's native screencast instead of
@@ -387,6 +385,7 @@ export class VideoEngine {
 
     this.cdpSession.on("Page.screencastFrame", async ({ data, sessionId }) => {
       this.latestFrameBuffer = Buffer.from(data, "base64");
+      this.freshFrameCount += 1;
       try {
         await this.cdpSession.send("Page.screencastFrameAck", { sessionId });
       } catch (err) {
@@ -395,7 +394,12 @@ export class VideoEngine {
     });
 
     await this.cdpSession.send("Page.startScreencast", {
-      format: "png",
+      // JPEG encodes considerably faster in Chromium than PNG per frame,
+      // which is the actual bottleneck on frame *arrival* rate now that
+      // screenshot() polling is gone. Quality 90 keeps visible artifacting
+      // minimal for a dashboard of mostly text/UI, not photographic detail.
+      format: "jpeg",
+      quality: 90,
       maxWidth: CAPTURE_WIDTH,
       maxHeight: CAPTURE_HEIGHT,
       everyNthFrame: 1,
@@ -471,6 +475,10 @@ export class VideoEngine {
     if (this.captureTimer) {
       clearTimeout(this.captureTimer);
       this.captureTimer = null;
+    }
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
     }
 
     console.log("[VIDEO_ENGINE] Shutting down");
