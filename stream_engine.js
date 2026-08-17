@@ -132,18 +132,17 @@ const FRAME_INTERVAL_MS = 1000 / CAPTURE_FPS;
 // ---------------------------------------------------------------------------
 // YouTube RTMP output adapter (Block 8)
 //
-// This constant is the ONLY thing that switches the video pipeline's output
-// destination. It must stay `null` in this repository — never commit a real
-// RTMP URL or stream key here. The real value (rtmp://a.rtmp.youtube.com/
-// live2/<STREAM_KEY>) should only ever be pasted in locally, on the machine
-// actually going live, after YouTube Live activation is complete, and never
-// pushed to version control (e.g. export it as an environment variable and
-// read it there instead of hardcoding it, if you wire this up for real).
+// This is the ONLY thing that switches the video pipeline's output
+// destination. It is read from the YOUTUBE_LIVE_URL environment variable —
+// never hardcoded here, never committed to this repository. The real value
+// (rtmp://a.rtmp.youtube.com/live2/<STREAM_KEY>) should only ever be set as
+// a deployment secret (e.g. Railway's service Variables tab) after YouTube
+// Live activation is complete, once the real stream key is in hand.
 //
-//   YOUTUBE_LIVE_URL === null        -> MODE 1: encode to local_stream_test.mp4
+//   YOUTUBE_LIVE_URL unset/empty      -> MODE 1: encode to local_stream_test.mp4
 //   YOUTUBE_LIVE_URL === "rtmp://..." -> MODE 2: stream out via FFmpeg FLV/RTMP
 // ---------------------------------------------------------------------------
-const YOUTUBE_LIVE_URL = null;
+const YOUTUBE_LIVE_URL = process.env.YOUTUBE_LIVE_URL || null;
 
 function startLocalServer(rootDir, port = 0) {
   const mimeTypes = {
