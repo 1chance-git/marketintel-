@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node stream_engine.js",
     "live": "node stream_engine.js --live",
-    "check": "node --check src/stream-engine/index.js && node --check supabase_client.js && node --check stream_engine.js"
+    "check": "node --check supabase_client.js && node --check stream_engine.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

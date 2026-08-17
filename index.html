@@ -1171,12 +1171,9 @@
           maximumFractionDigits: state.last >= 100 ? 2 : 4,
         });
 
-        let changeHtml = "";
         let cls = "t-flat";
         if (Number.isFinite(state.changePct)) {
-          const arrow = state.changePct > 0 ? "▲" : state.changePct < 0 ? "▼" : "●";
           cls = state.changePct > 0 ? "t-up" : state.changePct < 0 ? "t-down" : "t-flat";
-          changeHtml = ` <span class="${cls}">${arrow}${Math.abs(state.changePct).toFixed(2)}%</span>`;
         }
 
         const item = document.createElement("span");
