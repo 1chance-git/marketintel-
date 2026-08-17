@@ -144,7 +144,7 @@ const FRAME_INTERVAL_MS = 1000 / CAPTURE_FPS;
 // ---------------------------------------------------------------------------
 const YOUTUBE_LIVE_URL = process.env.YOUTUBE_LIVE_URL || null;
 
-function startLocalServer(rootDir, port = 0) {
+function startLocalServer(rootDir, { getLatestFrame } = {}) {
   const mimeTypes = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -153,8 +153,26 @@ function startLocalServer(rootDir, port = 0) {
   };
 
   const server = http.createServer(async (req, res) => {
+    const urlPath = decodeURIComponent(req.url.split("?")[0]);
+
+    // TEMPORARY debug route: serves whatever frame the capture engine most
+    // recently pulled off the CDP screencast, so the actual rendered
+    // dashboard (chart included) can be checked from a browser without
+    // relying on deploy-log scraping or Railway's start-command overrides.
+    // Remove once chart verification is no longer needed.
+    if (urlPath === "/debug/last-frame.png") {
+      const buffer = typeof getLatestFrame === "function" ? getLatestFrame() : null;
+      if (!buffer) {
+        res.writeHead(503, { "Content-Type": "text/plain" });
+        res.end("No frame captured yet");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
+      res.end(buffer);
+      return;
+    }
+
     try {
-      const urlPath = decodeURIComponent(req.url.split("?")[0]);
       const relPath = urlPath === "/" ? "/index.html" : urlPath;
       const safePath = path.normalize(relPath).replace(/^(\.\.[/\\])+/, "");
       const filePath = path.join(rootDir, safePath);
@@ -175,11 +193,18 @@ function startLocalServer(rootDir, port = 0) {
     }
   });
 
+  // Bind to 0.0.0.0 only when Railway (or similar) has assigned a public
+  // PORT, so a generated domain can actually reach this server. Otherwise
+  // stay on loopback with a random port, as before, for local/internal use.
+  const usePublicPort = Boolean(process.env.PORT);
+  const host = usePublicPort ? "0.0.0.0" : "127.0.0.1";
+  const port = usePublicPort ? Number(process.env.PORT) : 0;
+
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => {
+    server.listen(port, host, () => {
       const actualPort = server.address().port;
-      console.log(`[VIDEO_ENGINE] Local HTTP server listening on http://127.0.0.1:${actualPort}`);
+      console.log(`[VIDEO_ENGINE] Local HTTP server listening on http://${host}:${actualPort}`);
       resolve({ server, port: actualPort });
     });
   });
@@ -241,13 +266,16 @@ export class VideoEngine {
     this.frameCount = 0;
     this.startTime = null;
     this.captureTimer = null;
+    this.latestFrameBuffer = null;
   }
 
   async run() {
     console.log("[VIDEO_ENGINE] Starting");
 
     try {
-      const { server, port } = await startLocalServer(this.rootDir);
+      const { server, port } = await startLocalServer(this.rootDir, {
+        getLatestFrame: () => this.latestFrameBuffer,
+      });
       this.server = server;
 
       this.browser = await puppeteer.launch({
