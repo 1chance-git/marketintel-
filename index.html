@@ -634,6 +634,7 @@
     // which asset's already-held data is shown via series.setData(), with
     // no re-subscribe/reconnect on rotation. BNB is intentionally excluded
     // — it stays tape-only, driven by the separate market-board script.
+    console.log("[DIAG:ohlc] script block executing, LightweightCharts=" + (typeof LightweightCharts));
     const ROTATION_ASSETS = ["BTC", "ETH", "SOL", "XRP"];
     const SYMBOL_OF = { BTC: "BTC/USD", ETH: "ETH/USD", SOL: "SOL/USD", XRP: "XRP/USD" };
     const TICKER_OF = { "BTC/USD": "BTC", "ETH/USD": "ETH", "SOL/USD": "SOL", "XRP/USD": "XRP" };
@@ -915,11 +916,14 @@
     }
 
     function connect() {
+      console.log(`[DIAG:ohlc] connect() called, creating WebSocket to ${STREAM_URL}`);
       setStatus("status-connecting", "Connecting...");
 
       try {
         socket = new WebSocket(STREAM_URL);
+        console.log("[DIAG:ohlc] WebSocket constructed, readyState=" + socket.readyState);
       } catch (err) {
+        console.log(`[DIAG:ohlc] WebSocket constructor threw: ${err.message}`);
         scheduleReconnect();
         return;
       }
@@ -1300,9 +1304,12 @@
     }
 
     function connect() {
+      console.log(`[DIAG:ticker] connect() called, creating WebSocket to ${STREAM_URL}`);
       try {
         socket = new WebSocket(STREAM_URL);
+        console.log("[DIAG:ticker] WebSocket constructed, readyState=" + socket.readyState);
       } catch (err) {
+        console.log(`[DIAG:ticker] WebSocket constructor threw: ${err.message}`);
         scheduleReconnect();
         return;
       }
