@@ -265,6 +265,27 @@
   #session-change.mb-up { color: #00ff00; }
   #session-change.mb-down { color: #ff3b30; }
 
+  #rotation-indicator {
+    flex: 0 0 18px;
+    height: 18px;
+    padding: 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 9.5px;
+    letter-spacing: 0.04em;
+    color: #4a4a4a;
+    border-bottom: 1px solid #1a1a1a;
+  }
+
+  .rot-dot {
+    color: #4a4a4a;
+  }
+
+  .rot-dot.rot-active {
+    color: #00ff00;
+  }
+
   #chart-area {
     flex: 1;
     position: relative;
@@ -274,6 +295,24 @@
   #chart-container {
     position: absolute;
     inset: 0;
+    transition: opacity 200ms ease-out;
+  }
+
+  #chart-container.rot-fade {
+    opacity: 0;
+  }
+
+  #chart-unavailable {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    color: #4a4a4a;
+    font-size: 13px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    pointer-events: none;
   }
 
   #chart-fallback {
@@ -515,15 +554,22 @@
   <div id="main-area">
     <div id="chart-pane">
       <div class="chart-header">
-        <span class="chart-header-label">BTC/USD &middot; 1M CANDLES</span>
+        <span class="chart-header-label" id="chart-header-label">BTC/USD &middot; 1M CANDLES</span>
         <div id="price-row">
           <span id="btc-price">--</span>
           <span id="session-change"></span>
         </div>
       </div>
+      <div id="rotation-indicator">
+        <span class="rot-dot" data-ticker="BTC">&#9679; BTC/USD</span>
+        <span class="rot-dot" data-ticker="ETH">&#9675; ETH/USD</span>
+        <span class="rot-dot" data-ticker="SOL">&#9675; SOL/USD</span>
+        <span class="rot-dot" data-ticker="XRP">&#9675; XRP/USD</span>
+      </div>
       <div id="chart-area">
         <div id="chart-container"></div>
         <div id="chart-fallback">Waiting for live BTC/USD feed...</div>
+        <div id="chart-unavailable">MARKET DATA TEMPORARILY UNAVAILABLE</div>
       </div>
     </div>
 
@@ -580,28 +626,49 @@
     // Kraken instead of Binance: Binance geo-blocks stream.binance.com for
     // US-based server IPs (HTTP 451 at the WebSocket handshake), which broke
     // this on our US-region Railway deployment. Kraken is US-compliant and
-    // has no such block. BTC/USD is Kraken's primary, most liquid pair —
-    // labeled accordingly rather than as BTC/USDT.
-    const SYMBOL = "BTC/USD";
+    // has no such block.
+    //
+    // Rotating hero chart: ONE persistent Kraken v2 "ohlc" WebSocket
+    // subscribes to all four rotating assets at once. Each asset's candle
+    // history is kept fresh in the background continuously; a timer swaps
+    // which asset's already-held data is shown via series.setData(), with
+    // no re-subscribe/reconnect on rotation. BNB is intentionally excluded
+    // — it stays tape-only, driven by the separate market-board script.
+    const ROTATION_ASSETS = ["BTC", "ETH", "SOL", "XRP"];
+    const SYMBOL_OF = { BTC: "BTC/USD", ETH: "ETH/USD", SOL: "SOL/USD", XRP: "XRP/USD" };
+    const TICKER_OF = { "BTC/USD": "BTC", "ETH/USD": "ETH", "SOL/USD": "SOL", "XRP/USD": "XRP" };
     const STREAM_URL = "wss://ws.kraken.com/v2";
     const OHLC_INTERVAL_MINUTES = 1;
     const RECONNECT_BASE_DELAY_MS = 1000;
     const RECONNECT_MAX_DELAY_MS = 30000;
+    const UNAVAILABLE_TIMEOUT_MS = 9000;
+    const CHART_ROTATION_INTERVAL_MS = 45000; // 45s per asset
 
     const priceEl = document.getElementById("btc-price");
     const statusEl = document.getElementById("connection-status");
     const fallbackEl = document.getElementById("chart-fallback");
     const containerEl = document.getElementById("chart-container");
+    const unavailableEl = document.getElementById("chart-unavailable");
     const liveDotEl = document.getElementById("live-dot");
     const sessionChangeEl = document.getElementById("session-change");
+    const headerLabelEl = document.getElementById("chart-header-label");
+    const rotDotEls = Array.from(document.querySelectorAll("#rotation-indicator .rot-dot"));
 
-    let lastPrice = null;
+    // Per-asset state: candles, session-open (for %-change), last price,
+    // and whether data has ever been confirmed available/unavailable.
+    const candleData = { BTC: [], ETH: [], SOL: [], XRP: [] };
+    const assetState = {};
+    ROTATION_ASSETS.forEach((t) => {
+      assetState[t] = { sessionOpen: null, lastPrice: null, everReceived: false, unavailable: false };
+    });
+    const unavailableTimers = {};
+
+    let activeTicker = "BTC";
     let flashTimeout = null;
     let reconnectAttempts = 0;
     let reconnectTimer = null;
     let socket = null;
-    let currentCandle = null;
-    let sessionOpen = null;
+    let rotationTimer = null;
 
     const chart = LightweightCharts.createChart(containerEl, {
       layout: {
@@ -661,31 +728,128 @@
       }, 500);
     }
 
-    function updatePrice(newPrice) {
-      const formatted = newPrice.toLocaleString("en-US", {
+    // Renders the header (ticker/price/%) for whichever asset is currently
+    // active, from that asset's own already-tracked state — never fetches.
+    function renderActiveHeader(flash) {
+      const ticker = activeTicker;
+      const state = assetState[ticker];
+      const symbol = SYMBOL_OF[ticker];
+
+      if (state.unavailable) {
+        headerLabelEl.textContent = `[${ticker}/USD]`;
+        priceEl.textContent = "--";
+        sessionChangeEl.textContent = "";
+        sessionChangeEl.className = "";
+        return;
+      }
+
+      headerLabelEl.textContent = `${symbol} · 1M CANDLES`;
+
+      if (state.lastPrice === null) {
+        priceEl.textContent = "--";
+        sessionChangeEl.textContent = "";
+        return;
+      }
+
+      const formatted = state.lastPrice.toLocaleString("en-US", {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
       });
       priceEl.textContent = formatted;
+      if (flash) flashPrice(flash);
 
-      if (lastPrice !== null) {
-        if (newPrice > lastPrice) flashPrice("up");
-        else if (newPrice < lastPrice) flashPrice("down");
-      }
-      lastPrice = newPrice;
-
-      // Session %-change is a presentational derivation from the real candle
-      // stream already flowing through this pipe: current close vs. the
-      // open of the first candle seen this session. No new data source.
-      if (sessionOpen !== null && Number.isFinite(sessionOpen) && sessionOpen !== 0) {
-        const pct = ((newPrice - sessionOpen) / sessionOpen) * 100;
+      if (state.sessionOpen !== null && Number.isFinite(state.sessionOpen) && state.sessionOpen !== 0) {
+        const pct = ((state.lastPrice - state.sessionOpen) / state.sessionOpen) * 100;
         const sign = pct > 0 ? "+" : "";
         sessionChangeEl.textContent = `${sign}${pct.toFixed(2)}% SESSION`;
         sessionChangeEl.className = pct > 0 ? "mb-up" : pct < 0 ? "mb-down" : "";
+      } else {
+        sessionChangeEl.textContent = "";
+        sessionChangeEl.className = "";
       }
     }
 
-    function handleCandle(entry) {
+    function renderRotationIndicator() {
+      rotDotEls.forEach((el) => {
+        const ticker = el.getAttribute("data-ticker");
+        const isActive = ticker === activeTicker;
+        el.classList.toggle("rot-active", isActive);
+        el.textContent = `${isActive ? "●" : "○"} ${SYMBOL_OF[ticker]}`;
+      });
+    }
+
+    // Swaps the visible chart/header to whichever asset is active, using
+    // only already-held background data — no re-fetch, no reconnect.
+    function renderActiveAsset() {
+      const ticker = activeTicker;
+      const state = assetState[ticker];
+
+      renderRotationIndicator();
+
+      if (state.unavailable) {
+        renderActiveHeader();
+        containerEl.style.display = "none";
+        fallbackEl.style.display = "none";
+        unavailableEl.style.display = "flex";
+        return;
+      }
+
+      unavailableEl.style.display = "none";
+      containerEl.style.display = "";
+
+      const candles = candleData[ticker];
+      if (!candles.length) {
+        fallbackEl.textContent = `Waiting for live ${SYMBOL_OF[ticker]} feed...`;
+        fallbackEl.style.display = "flex";
+      } else {
+        fallbackEl.style.display = "none";
+      }
+
+      candleSeries.setData(candles);
+      chart.timeScale().fitContent();
+      renderActiveHeader();
+    }
+
+    // Restrained 150-250ms opacity fade on rotation, per spec — chart stays
+    // the same size/position, only data + header swap underneath it.
+    function rotateTo(ticker) {
+      activeTicker = ticker;
+      containerEl.classList.add("rot-fade");
+      setTimeout(() => {
+        renderActiveAsset();
+        containerEl.classList.remove("rot-fade");
+      }, 200);
+    }
+
+    function advanceRotation() {
+      const idx = ROTATION_ASSETS.indexOf(activeTicker);
+      const next = ROTATION_ASSETS[(idx + 1) % ROTATION_ASSETS.length];
+      rotateTo(next);
+    }
+
+    function startRotationTimer() {
+      if (rotationTimer) clearInterval(rotationTimer);
+      rotationTimer = setInterval(advanceRotation, CHART_ROTATION_INTERVAL_MS);
+    }
+
+    function markAssetUnavailable(ticker) {
+      const state = assetState[ticker];
+      if (state.everReceived) return; // already have real data — never overwrite it
+      state.unavailable = true;
+      if (ticker === activeTicker) renderActiveAsset();
+    }
+
+    function armUnavailableTimer(ticker) {
+      if (unavailableTimers[ticker]) clearTimeout(unavailableTimers[ticker]);
+      unavailableTimers[ticker] = setTimeout(() => {
+        markAssetUnavailable(ticker);
+      }, UNAVAILABLE_TIMEOUT_MS);
+    }
+
+    function handleCandle(symbol, entry) {
+      const ticker = TICKER_OF[symbol];
+      if (!ticker) return; // not one of our rotating assets — ignore
+
       const time = Math.floor(new Date(entry.interval_begin).getTime() / 1000);
       const candle = {
         time,
@@ -699,14 +863,41 @@
         return; // Malformed entry — skip rather than feed bad data to the chart.
       }
 
-      if (sessionOpen === null && Number.isFinite(candle.open)) {
-        sessionOpen = candle.open;
+      const state = assetState[ticker];
+      state.everReceived = true;
+      state.unavailable = false;
+      if (unavailableTimers[ticker]) {
+        clearTimeout(unavailableTimers[ticker]);
+        unavailableTimers[ticker] = null;
       }
 
-      candleSeries.update(candle);
-      currentCandle = candle;
-      fallbackEl.style.display = "none";
-      updatePrice(candle.close);
+      if (state.sessionOpen === null && Number.isFinite(candle.open)) {
+        state.sessionOpen = candle.open;
+      }
+
+      const series = candleData[ticker];
+      const last = series[series.length - 1];
+      if (last && last.time === candle.time) {
+        series[series.length - 1] = candle;
+      } else {
+        series.push(candle);
+      }
+
+      const prevPrice = state.lastPrice;
+      state.lastPrice = candle.close;
+
+      // Keep all four assets' background state current; only touch the
+      // live chart/series/header when the update is for the visible asset.
+      if (ticker === activeTicker) {
+        candleSeries.update(candle);
+        fallbackEl.style.display = "none";
+        let flash = null;
+        if (prevPrice !== null) {
+          if (candle.close > prevPrice) flash = "up";
+          else if (candle.close < prevPrice) flash = "down";
+        }
+        renderActiveHeader(flash);
+      }
     }
 
     function scheduleReconnect() {
@@ -740,7 +931,7 @@
           method: "subscribe",
           params: {
             channel: "ohlc",
-            symbol: [SYMBOL],
+            symbol: ROTATION_ASSETS.map((t) => SYMBOL_OF[t]),
             interval: OHLC_INTERVAL_MINUTES,
             // Explicitly request the historical backfill Kraken's v2 OHLC
             // channel can send on subscribe. Without a batch of prior
@@ -750,20 +941,32 @@
             snapshot: true,
           },
         }));
+
+        // Backstop: if a rotating asset never produces a valid message
+        // (unsupported pair, silently dropped subscription, etc.), mark it
+        // unavailable rather than leaving it looking permanently "waiting".
+        ROTATION_ASSETS.forEach((ticker) => {
+          if (assetState[ticker].everReceived) return;
+          armUnavailableTimer(ticker);
+        });
       });
 
       socket.addEventListener("message", (event) => {
         try {
           const payload = JSON.parse(event.data);
+
+          // Explicit per-symbol subscription rejection (e.g. pair not listed).
+          if (payload && payload.method === "subscribe" && payload.success === false && payload.result) {
+            const ticker = TICKER_OF[payload.result.symbol];
+            if (ticker) markAssetUnavailable(ticker);
+            return;
+          }
+
           if (payload && payload.channel === "ohlc" && Array.isArray(payload.data)) {
-            const isInitialBatch = !currentCandle && payload.data.length > 1;
-            payload.data.forEach(handleCandle);
-            // After an initial multi-candle snapshot arrives, fit the
-            // timescale to it so the history is actually visible instead
-            // of leaving the view zoomed on a single bar at the far edge.
-            if (isInitialBatch) {
-              chart.timeScale().fitContent();
-            }
+            payload.data.forEach((entry) => {
+              const symbol = entry && entry.symbol;
+              if (symbol) handleCandle(symbol, entry);
+            });
           }
         } catch (err) {
           // Ignore malformed frames; wait for the next valid message.
@@ -781,6 +984,8 @@
       });
     }
 
+    renderActiveAsset();
+    startRotationTimer();
     connect();
   })();
 </script>
