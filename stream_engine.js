@@ -291,6 +291,26 @@ export class VideoEngine {
         waitUntil: "networkidle0",
         timeout: 30_000,
       });
+
+      // The market-tape and hero-chart WebSocket connections aren't
+      // established yet when goto() resolves - Kraken's WS round-trip
+      // (TCP+TLS+subscribe+first message) is slower than page load, and
+      // networkidle0 doesn't wait on persistent connections. Without this,
+      // capture used to start almost immediately and the first several
+      // seconds of frames showed the static "DATA UNAVAILABLE" HTML default
+      // for every asset - not a real data outage, just a startup race. Give
+      // the feeds a bounded window to connect before capture begins.
+      await this.page
+        .waitForFunction(
+          () => {
+            const el = document.getElementById("mb-price-BTC");
+            return !!el && el.textContent !== "DATA UNAVAILABLE";
+          },
+          { timeout: 8_000 }
+        )
+        .catch(() => {
+          console.error("[VIDEO_ENGINE] BTC market data not confirmed within 8s of page load; starting capture anyway");
+        });
     } catch (err) {
       console.error(`[VIDEO_ENGINE] Failed to open dashboard: ${err.message}`);
       await this.shutdown(1);
