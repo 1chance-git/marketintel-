@@ -1,8 +1,22 @@
 {
-  "id": null,
-  "timestamp": null,
-  "etf_flows": [],
-  "system_macro": [],
-  "x_narratives": [],
-  "sentiment": []
+  "id": 1,
+  "timestamp": "2026-08-16T21:39:47+00:00",
+  "etf_flows": [
+    "US Spot BTC/ETH ETF Flows: recent outflows on BTC, selective ETH inflows"
+  ],
+  "system_macro": [
+    "Fear & Greed Index: ~34-37 (Fear)",
+    "Regulatory Calendar: SEC Regulation Crypto delayed; CFTC Aug 20; Senate CLARITY Act Sep 15",
+    "Liquidity Indicators: thin stablecoin depth, muted volumes",
+    "Social Volume: subdued overall, BTC still dominant"
+  ],
+  "x_narratives": [
+    "Strongest early narrative: RWA / Tokenization - institutional (BlackRock, DTCC, Robinhood Chain), quiet outperformance, still early vs TAM",
+    "Other rising themes: AI agents + DeFi convergence, quality cash-flow alts (e.g. Hyperliquid), stablecoins & prediction markets",
+    "No broad altseason yet. Capital rotating selectively"
+  ],
+  "sentiment": [
+    "Crypto: Cautious / mildly bearish short-term (Fear & Greed ~34, sticky BTC dominance, selective quality only). Lagging AI/tech equities",
+    "Equities: Still risk-on with improving breadth"
+  ]
 }
