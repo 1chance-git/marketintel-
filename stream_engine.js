@@ -329,13 +329,52 @@ export class VideoEngine {
       ? "YouTube RTMP (destination redacted)"
       : this.outputTarget.destination;
     const durationLabel = this.durationMs === null ? "continuously (until stopped)" : `for ${this.durationMs / 1000}s`;
+
+    try {
+      await this.startScreencast();
+    } catch (err) {
+      console.error(`[VIDEO_ENGINE] Failed to start screencast: ${err.message}`);
+      await this.shutdown(1);
+      return;
+    }
+
     console.log(`[VIDEO_ENGINE] Capturing at ${CAPTURE_FPS}fps ${durationLabel} -> ${destinationLabel}`);
     this.capturing = true;
     this.startTime = Date.now();
-    this.scheduleNextFrame();
+    this.scheduleEncodeTick();
   }
 
-  scheduleNextFrame(lastFrameElapsedMs = 0) {
+  // Uses the Chrome DevTools Protocol's native screencast instead of
+  // repeated page.screenshot() calls. CDP pushes a frame whenever Chromium
+  // actually repaints, at near-zero overhead compared to round-tripping a
+  // full-page PNG capture on every tick. Frame *arrival* (bursty, driven by
+  // page repaints) is deliberately decoupled from frame *encoding* (steady
+  // CAPTURE_FPS, driven by scheduleEncodeTick): we only keep the latest
+  // decoded frame around and let the encode tick pull from it, so FFmpeg
+  // always receives a smooth fixed-rate stream regardless of how often the
+  // page actually changes.
+  async startScreencast() {
+    this.cdpSession = await this.page.target().createCDPSession();
+    this.latestFrameBuffer = null;
+
+    this.cdpSession.on("Page.screencastFrame", async ({ data, sessionId }) => {
+      this.latestFrameBuffer = Buffer.from(data, "base64");
+      try {
+        await this.cdpSession.send("Page.screencastFrameAck", { sessionId });
+      } catch (err) {
+        // Session may already be closing; safe to ignore.
+      }
+    });
+
+    await this.cdpSession.send("Page.startScreencast", {
+      format: "png",
+      maxWidth: CAPTURE_WIDTH,
+      maxHeight: CAPTURE_HEIGHT,
+      everyNthFrame: 1,
+    });
+  }
+
+  scheduleEncodeTick() {
     if (!this.capturing) return;
 
     if (this.durationMs !== null) {
@@ -349,40 +388,28 @@ export class VideoEngine {
     // runs until finishCapture()/shutdown() is triggered externally (e.g.
     // SIGINT/SIGTERM, or a fatal error elsewhere in the pipeline).
 
-    // Drift-corrected pacing: only wait the remaining slice of the frame
-    // interval, not the full interval on top of however long capture just
-    // took. If capture already exceeded the interval, fire immediately.
-    const delay = Math.max(0, FRAME_INTERVAL_MS - lastFrameElapsedMs);
-
     this.captureTimer = setTimeout(() => {
-      this.captureFrame();
-    }, delay);
+      this.encodeTick();
+    }, FRAME_INTERVAL_MS);
   }
 
-  async captureFrame() {
+  async encodeTick() {
     if (!this.capturing) return;
-    const frameStart = Date.now();
 
-    let buffer;
-    try {
-      buffer = await this.page.screenshot({ type: "png" });
-    } catch (err) {
-      console.error(`[VIDEO_ENGINE] Screenshot failed, skipping frame: ${err.message}`);
-      this.scheduleNextFrame();
-      return;
-    }
-
-    if (!this.capturing || !this.ffmpeg || this.ffmpeg.stdin.destroyed) {
+    if (!this.latestFrameBuffer || !this.ffmpeg || this.ffmpeg.stdin.destroyed) {
+      // No frame arrived yet (e.g. very first tick) or ffmpeg unavailable —
+      // skip this slot rather than write nothing or block.
+      this.scheduleEncodeTick();
       return;
     }
 
     try {
-      const canWriteMore = this.ffmpeg.stdin.write(buffer);
+      const canWriteMore = this.ffmpeg.stdin.write(this.latestFrameBuffer);
       this.frameCount += 1;
 
       if (!canWriteMore) {
         // Respect stdin backpressure: wait for drain before scheduling the
-        // next capture so frames don't pile up in memory.
+        // next tick so frames don't pile up in memory.
         await new Promise((resolve) => this.ffmpeg.stdin.once("drain", resolve));
       }
     } catch (err) {
@@ -391,12 +418,7 @@ export class VideoEngine {
       return;
     }
 
-    const frameElapsed = Date.now() - frameStart;
-    if (frameElapsed > FRAME_INTERVAL_MS * 2) {
-      console.warn(`[VIDEO_ENGINE] Frame ${this.frameCount} took ${frameElapsed}ms (target ${FRAME_INTERVAL_MS.toFixed(1)}ms)`);
-    }
-
-    this.scheduleNextFrame(frameElapsed);
+    this.scheduleEncodeTick();
   }
 
   finishCapture() {
@@ -406,7 +428,10 @@ export class VideoEngine {
       clearTimeout(this.captureTimer);
       this.captureTimer = null;
     }
-    console.log(`[VIDEO_ENGINE] Capture complete: ${this.frameCount} frames captured`);
+    if (this.cdpSession) {
+      this.cdpSession.send("Page.stopScreencast").catch(() => {});
+    }
+    console.log(`[VIDEO_ENGINE] Capture complete: ${this.frameCount} frames encoded`);
     this.shutdown(0);
   }
 
