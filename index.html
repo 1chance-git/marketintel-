@@ -428,6 +428,96 @@
     border-bottom: none;
   }
 
+  /* ---------- Terminal-style intelligence rows ---------- */
+  .term-body {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    text-align: left;
+    overflow-y: auto;
+    gap: 10px;
+    padding: 8px 12px;
+  }
+
+  .term-section-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #5a5a5a;
+    padding-bottom: 3px;
+    margin-bottom: 2px;
+    border-bottom: 1px solid #1a1a1a;
+  }
+
+  .term-rows,
+  .term-numbered {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .term-rows li,
+  .term-numbered li {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 3px 0;
+    border-bottom: 1px solid #141414;
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  .term-rows li:last-child,
+  .term-numbered li:last-child {
+    border-bottom: none;
+  }
+
+  .term-row-label {
+    flex: 0 0 auto;
+    max-width: 44%;
+    color: #8a8a8a;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .term-row-value {
+    flex: 1 1 auto;
+    text-align: right;
+    color: #e8e8e8;
+    letter-spacing: 0.01em;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+  }
+
+  .term-row-value.term-tone-up { color: #00ff00; }
+  .term-row-value.term-tone-down { color: #ff3b30; }
+
+  .term-num {
+    flex: 0 0 auto;
+    color: #3a3a3a;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .term-headline {
+    flex: 1 1 auto;
+    color: #cfcfcf;
+    letter-spacing: 0.01em;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+    text-transform: uppercase;
+  }
+
   /* ---------- 5. BOTTOM TICKER ---------- */
   #ticker-strip {
     flex: 0 0 22px;
@@ -579,9 +669,16 @@
           <span class="card-title-label">ETF Flows &amp; System Macro</span>
           <span class="card-updated" id="macro-updated"></span>
         </div>
-        <div class="card-body" id="macro-body">
+        <div class="card-body term-body" id="macro-body">
           <div class="empty-state" id="macro-empty-state">Waiting for macro intelligence...</div>
-          <ul class="signal-list" id="macro-list" hidden></ul>
+          <div class="term-section" id="macro-etf-section" hidden>
+            <div class="term-section-label">Institutional Flow</div>
+            <ul class="term-rows" id="macro-etf-list"></ul>
+          </div>
+          <div class="term-section" id="macro-system-section" hidden>
+            <div class="term-section-label">Macro Pulse</div>
+            <ul class="term-rows" id="macro-system-list"></ul>
+          </div>
         </div>
       </div>
 
@@ -590,9 +687,16 @@
           <span class="card-title-label">X Narratives &amp; Sentiment</span>
           <span class="card-updated" id="sentiment-updated"></span>
         </div>
-        <div class="card-body" id="sentiment-body">
+        <div class="card-body term-body" id="sentiment-body">
           <div class="empty-state" id="sentiment-empty-state">Waiting for sentiment intelligence...</div>
-          <ul class="signal-list" id="sentiment-list" hidden></ul>
+          <div class="term-section" id="sentiment-narrative-section" hidden>
+            <div class="term-section-label">X Narrative Pulse</div>
+            <ol class="term-numbered" id="sentiment-narrative-list"></ol>
+          </div>
+          <div class="term-section" id="sentiment-tone-section" hidden>
+            <div class="term-section-label">Sentiment</div>
+            <ul class="term-rows" id="sentiment-tone-list"></ul>
+          </div>
         </div>
       </div>
     </div>
@@ -999,9 +1103,15 @@
     const DATA_URL = "./grok_data.json";
 
     const macroEmptyEl = document.getElementById("macro-empty-state");
-    const macroListEl = document.getElementById("macro-list");
+    const macroEtfSectionEl = document.getElementById("macro-etf-section");
+    const macroEtfListEl = document.getElementById("macro-etf-list");
+    const macroSystemSectionEl = document.getElementById("macro-system-section");
+    const macroSystemListEl = document.getElementById("macro-system-list");
     const sentimentEmptyEl = document.getElementById("sentiment-empty-state");
-    const sentimentListEl = document.getElementById("sentiment-list");
+    const sentimentNarrativeSectionEl = document.getElementById("sentiment-narrative-section");
+    const sentimentNarrativeListEl = document.getElementById("sentiment-narrative-list");
+    const sentimentToneSectionEl = document.getElementById("sentiment-tone-section");
+    const sentimentToneListEl = document.getElementById("sentiment-tone-list");
     const macroUpdatedEl = document.getElementById("macro-updated");
     const sentimentUpdatedEl = document.getElementById("sentiment-updated");
 
@@ -1042,35 +1152,115 @@
       return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
     }
 
-    function renderList(listEl, emptyEl, items) {
-      listEl.textContent = "";
-
-      if (!items.length) {
-        listEl.hidden = true;
-        emptyEl.hidden = false;
-        return;
+    // Grok's signal fields are free-form sentences, not structured
+    // key/value data. Most of them already follow a "Label: detail"
+    // shape (e.g. "Fear & Greed Index: ~34-37 (Fear)") - splitting on the
+    // first colon turns that into a compact terminal row without
+    // inventing anything not present in the source text. A colon found
+    // very late in the sentence is treated as incidental punctuation
+    // rather than a label separator.
+    function splitLabelValue(text) {
+      const idx = text.indexOf(":");
+      if (idx === -1 || idx > 40) {
+        return { label: null, value: text };
       }
+      return { label: text.slice(0, idx).trim(), value: text.slice(idx + 1).trim() };
+    }
 
-      emptyEl.hidden = true;
-      listEl.hidden = false;
+    function shortenLabel(label) {
+      return label
+        .toUpperCase()
+        .replace(/\b(INDEX|INDICATORS|CALENDAR)\b/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
 
+    // Purely presentational tone coloring, derived from words already
+    // present in the Grok text itself (never a new/invented value). A
+    // sentence mentioning both directions (e.g. "outflows on BTC,
+    // selective ETH inflows") reads as mixed/neutral rather than picking
+    // a side.
+    const TONE_DOWN_WORDS = ["outflow", "bearish", "fear", "thin", "muted", "delayed", "cautious", "risk-off"];
+    const TONE_UP_WORDS = ["inflow", "bullish", "greed", "risk-on", "improving", "strong", "robust"];
+
+    function classifyTone(text) {
+      const lower = text.toLowerCase();
+      const hasDown = TONE_DOWN_WORDS.some((w) => lower.includes(w));
+      const hasUp = TONE_UP_WORDS.some((w) => lower.includes(w));
+      if (hasUp && !hasDown) return "up";
+      if (hasDown && !hasUp) return "down";
+      return "flat";
+    }
+
+    function renderRows(listEl, items) {
+      listEl.textContent = "";
       const fragment = document.createDocumentFragment();
-      items.forEach((text) => {
+
+      items.forEach((raw) => {
+        const { label, value } = splitLabelValue(raw);
         const li = document.createElement("li");
-        li.textContent = text; // textContent only — never innerHTML — to prevent HTML injection.
+
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = label ? shortenLabel(label) : "—";
+
+        const valueSpan = document.createElement("span");
+        valueSpan.className = `term-row-value term-tone-${classifyTone(raw)}`;
+        valueSpan.textContent = (label ? value : raw).toUpperCase();
+
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
         fragment.appendChild(li);
       });
+
+      listEl.appendChild(fragment);
+    }
+
+    function renderNumbered(listEl, items) {
+      listEl.textContent = "";
+      const fragment = document.createDocumentFragment();
+
+      items.forEach((raw, i) => {
+        const li = document.createElement("li");
+
+        const num = document.createElement("span");
+        num.className = "term-num";
+        num.textContent = String(i + 1).padStart(2, "0");
+
+        const headline = document.createElement("span");
+        headline.className = "term-headline";
+        headline.textContent = raw; // textContent only — never innerHTML — to prevent HTML injection.
+
+        li.appendChild(num);
+        li.appendChild(headline);
+        fragment.appendChild(li);
+      });
+
       listEl.appendChild(fragment);
     }
 
     function renderMacro(etfFlows, systemMacro) {
-      const combined = [...normalizeArray(etfFlows), ...normalizeArray(systemMacro)];
-      renderList(macroListEl, macroEmptyEl, combined);
+      const etf = normalizeArray(etfFlows);
+      const macro = normalizeArray(systemMacro);
+
+      macroEmptyEl.hidden = etf.length > 0 || macro.length > 0;
+      macroEtfSectionEl.hidden = etf.length === 0;
+      macroSystemSectionEl.hidden = macro.length === 0;
+
+      renderRows(macroEtfListEl, etf);
+      renderRows(macroSystemListEl, macro);
     }
 
     function renderSentiment(xNarratives, sentiment) {
-      const combined = [...normalizeArray(xNarratives), ...normalizeArray(sentiment)];
-      renderList(sentimentListEl, sentimentEmptyEl, combined);
+      const narratives = normalizeArray(xNarratives);
+      const tone = normalizeArray(sentiment);
+
+      sentimentEmptyEl.hidden = narratives.length > 0 || tone.length > 0;
+      sentimentNarrativeSectionEl.hidden = narratives.length === 0;
+      sentimentToneSectionEl.hidden = tone.length === 0;
+
+      renderNumbered(sentimentNarrativeListEl, narratives);
+      renderRows(sentimentToneListEl, tone);
     }
 
     async function pollGrokData() {
