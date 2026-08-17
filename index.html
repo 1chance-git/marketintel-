@@ -2,113 +2,273 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>MarketIntel Broadcast Dashboard</title>
+<title>MarketIntel Broadcast Terminal</title>
 <style>
+  * { box-sizing: border-box; }
+
   html, body {
     margin: 0;
     padding: 0;
     width: 1280px;
     height: 720px;
     overflow: hidden;
-    background: #08090d;
-    color: #e6e8f0;
-    font-family: "Segoe UI", Arial, sans-serif;
+    background: #000000;
+    color: #e8e8e8;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", Menlo, Consolas, monospace;
   }
 
   #stage {
     position: relative;
     width: 1280px;
     height: 720px;
-    background: #08090d;
-    display: flex;
-    box-sizing: border-box;
-  }
-
-  .pane {
-    box-sizing: border-box;
-    height: 100%;
-  }
-
-  #left-pane {
-    width: 70%;
-    border-right: 1px solid #1f2438;
+    background: #000000;
     display: flex;
     flex-direction: column;
-    box-sizing: border-box;
   }
 
-  #right-pane {
-    width: 30%;
+  /* ---------- 1. HEADER ---------- */
+  #header {
+    height: 34px;
+    flex: 0 0 34px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 14px;
+    border-bottom: 1px solid #1a1a1a;
+    background: #000000;
+  }
+
+  #brand-block {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  #brand {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: #ffffff;
+  }
+
+  #brand .brand-accent {
+    color: #00ff00;
+  }
+
+  #brand-sub {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #5a5a5a;
+    border-left: 1px solid #1a1a1a;
+    padding-left: 10px;
+  }
+
+  #header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .header-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #9a9a9a;
+    letter-spacing: 0.03em;
+  }
+
+  #live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #4a4a4a;
+    display: inline-block;
+  }
+
+  #live-dot.dot-live {
+    background: #00ff00;
+    animation: dot-pulse 1.6s ease-in-out infinite;
+  }
+
+  #live-dot.dot-connecting {
+    background: #d4b34a;
+  }
+
+  #live-dot.dot-down {
+    background: #ff3b30;
+  }
+
+  @keyframes dot-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+
+  #connection-status {
+    font-size: 10.5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border: 1px solid #1a1a1a;
+    color: #9a9a9a;
+  }
+
+  #connection-status.status-live {
+    color: #00ff00;
+    border-color: #113311;
+  }
+
+  #connection-status.status-connecting {
+    color: #d4b34a;
+    border-color: #332c11;
+  }
+
+  #connection-status.status-down {
+    color: #ff3b30;
+    border-color: #331111;
+  }
+
+  #clock {
+    font-size: 11px;
+    color: #cfcfcf;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+  }
+
+  /* ---------- 2. MARKET TAPE ---------- */
+  #market-board {
+    display: flex;
+    flex: 0 0 50px;
+    height: 50px;
+    background: #000000;
+    border-bottom: 1px solid #1a1a1a;
+  }
+
+  .mb-cell {
+    flex: 1;
     display: flex;
     flex-direction: column;
-    box-sizing: border-box;
+    justify-content: center;
+    gap: 3px;
+    padding: 5px 14px;
+    border-right: 1px solid #1a1a1a;
+    min-width: 0;
+    line-height: 1.1;
+  }
+
+  .mb-cell:last-child {
+    border-right: none;
+  }
+
+  .mb-row-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .mb-ticker {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #7a7a7a;
+  }
+
+  .mb-price {
+    font-size: 15px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: #e8e8e8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mb-change {
+    font-size: 10.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  .mb-change.mb-up { color: #00ff00; }
+  .mb-change.mb-down { color: #ff3b30; }
+  .mb-change.mb-unavailable { color: #4a4a4a; }
+
+  .mb-price.mb-unavailable-price {
+    color: #4a4a4a;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+  }
+
+  /* ---------- 3. MAIN MARKET AREA ---------- */
+  #main-area {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    border-bottom: 1px solid #1a1a1a;
+  }
+
+  #chart-pane {
+    flex: 1 1 68%;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border-right: 1px solid #1a1a1a;
   }
 
   .chart-header {
-    padding: 14px 18px;
-    border-bottom: 1px solid #1f2438;
+    flex: 0 0 58px;
+    height: 58px;
+    padding: 0 14px;
+    border-bottom: 1px solid #1a1a1a;
     display: flex;
     align-items: center;
     justify-content: space-between;
   }
 
   .chart-header-label {
-    font-size: 14px;
+    font-size: 11px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #8b93b0;
+    color: #7a7a7a;
   }
 
   #price-row {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: 12px;
   }
 
   #btc-price {
-    font-size: 22px;
+    font-size: 38px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
-    color: #e6e8f0;
+    color: #ffffff;
     transition: color 120ms ease-out;
+    line-height: 1;
   }
 
-  #btc-price.flash-up {
-    color: #34d399;
+  #btc-price.flash-up { color: #00ff00; }
+  #btc-price.flash-down { color: #ff3b30; }
+
+  #session-change {
+    font-size: 15px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: #7a7a7a;
   }
 
-  #btc-price.flash-down {
-    color: #f87171;
-  }
-
-  #connection-status {
-    font-size: 11px;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    padding: 3px 8px;
-    border-radius: 3px;
-    border: 1px solid #1f2438;
-    color: #8b93b0;
-  }
-
-  #connection-status.status-live {
-    color: #34d399;
-    border-color: #1c4a3a;
-  }
-
-  #connection-status.status-connecting {
-    color: #d4b34a;
-    border-color: #4a3f1c;
-  }
-
-  #connection-status.status-down {
-    color: #f87171;
-    border-color: #4a1f1f;
-  }
+  #session-change.mb-up { color: #00ff00; }
+  #session-change.mb-down { color: #ff3b30; }
 
   #chart-area {
     flex: 1;
     position: relative;
+    min-height: 0;
   }
 
   #chart-container {
@@ -122,45 +282,60 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #4a5170;
-    font-size: 14px;
+    color: #4a4a4a;
+    font-size: 12px;
     letter-spacing: 0.04em;
     pointer-events: none;
+  }
+
+  /* ---------- 4. INTELLIGENCE AREA ---------- */
+  #intel-pane {
+    flex: 1 1 32%;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
   }
 
   .card {
     flex: 1;
     box-sizing: border-box;
-    border-bottom: 1px solid #1f2438;
+    border-bottom: 1px solid #1a1a1a;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    min-height: 0;
   }
 
-  #right-pane .card:last-child {
+  #intel-pane .card:last-child {
     border-bottom: none;
   }
 
   .card-title {
-    padding: 12px 16px;
+    flex: 0 0 22px;
+    height: 22px;
+    padding: 0 12px;
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     gap: 8px;
-    border-bottom: 1px solid #1f2438;
+    border-bottom: 1px solid #1a1a1a;
+    background: #050505;
   }
 
   .card-title-label {
-    font-size: 13px;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    color: #c7cbe0;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #cfcfcf;
   }
 
   .card-updated {
-    font-size: 10.5px;
-    color: #5b6274;
+    font-size: 9px;
+    color: #5a5a5a;
     white-space: nowrap;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
   }
 
   .card-updated.stale {
@@ -169,16 +344,17 @@
 
   .card-body {
     flex: 1;
-    padding: 16px;
+    padding: 0 12px;
     display: flex;
     align-items: center;
     justify-content: center;
     text-align: center;
+    min-height: 0;
   }
 
   .empty-state {
-    color: #4a5170;
-    font-size: 13px;
+    color: #4a4a4a;
+    font-size: 11px;
     letter-spacing: 0.02em;
   }
 
@@ -187,85 +363,219 @@
     margin: 0;
     padding: 0;
     width: 100%;
+    height: 100%;
     max-height: 100%;
     overflow-y: auto;
-    font-size: 12px;
-    line-height: 1.5;
+    font-size: 11px;
+    line-height: 1.4;
   }
 
   .signal-list li {
     padding: 6px 0;
-    border-bottom: 1px solid #1f2438;
-    color: #c7cbe0;
+    border-bottom: 1px solid #1a1a1a;
+    color: #cfcfcf;
     text-align: left;
     word-break: break-word;
+    letter-spacing: 0.01em;
+  }
+
+  .signal-list li::before {
+    content: "\2022";
+    color: #3a3a3a;
+    margin-right: 6px;
   }
 
   .signal-list li:last-child {
     border-bottom: none;
   }
 
+  /* ---------- 5. BOTTOM TICKER ---------- */
+  #ticker-strip {
+    flex: 0 0 22px;
+    height: 22px;
+    overflow: hidden;
+    border-bottom: 1px solid #1a1a1a;
+    background: #000000;
+    display: flex;
+    align-items: center;
+    position: relative;
+  }
+
+  #ticker-track {
+    display: inline-flex;
+    white-space: nowrap;
+    align-items: center;
+    animation: ticker-scroll 30s linear infinite;
+    font-size: 11px;
+    padding-left: 1280px;
+  }
+
+  @keyframes ticker-scroll {
+    from { transform: translateX(0); }
+    to { transform: translateX(-100%); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #ticker-track {
+      animation: none;
+    }
+  }
+
+  .ticker-item {
+    margin-right: 24px;
+    padding-right: 24px;
+    border-right: 1px solid #1a1a1a;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .ticker-item .t-ticker {
+    color: #7a7a7a;
+    margin-right: 6px;
+  }
+
+  .ticker-item .t-up { color: #00ff00; }
+  .ticker-item .t-down { color: #ff3b30; }
+  .ticker-item .t-flat { color: #9a9a9a; }
+
+  /* ---------- 6. WATERMARK ---------- */
   #watermark {
-    position: absolute;
-    bottom: 8px;
-    left: 0;
+    flex: 0 0 12px;
+    height: 12px;
     width: 100%;
     text-align: center;
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    color: #3a4058;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    color: #333333;
     pointer-events: none;
+    line-height: 12px;
   }
 </style>
 </head>
 <body>
 <div id="stage">
-  <div id="left-pane" class="pane">
-    <div class="chart-header">
-      <span class="chart-header-label">BTC/USD · 1M</span>
-      <div id="price-row">
-        <span id="btc-price">--</span>
+
+  <div id="header">
+    <div id="brand-block">
+      <div id="brand">MARKET <span class="brand-accent">INTELLIGENCE</span> NETWORK</div>
+      <div id="brand-sub">Crypto Markets</div>
+    </div>
+    <div id="header-right">
+      <div class="header-item">
+        <span id="live-dot"></span>
+        <span>BTC/USD</span>
+      </div>
+      <div class="header-item">
         <span id="connection-status" class="status-connecting">Connecting...</span>
       </div>
-    </div>
-    <div id="chart-area">
-      <div id="chart-container"></div>
-      <div id="chart-fallback">Waiting for live BTC/USD feed...</div>
-    </div>
-  </div>
-
-  <div id="right-pane" class="pane">
-    <div class="card" id="card-macro">
-      <div class="card-title">
-        <span class="card-title-label">📊 ETF FLOWS &amp; SYSTEM MACRO</span>
-        <span class="card-updated" id="macro-updated"></span>
-      </div>
-      <div class="card-body" id="macro-body">
-        <div class="empty-state" id="macro-empty-state">Waiting for macro intelligence...</div>
-        <ul class="signal-list" id="macro-list" hidden></ul>
-      </div>
-    </div>
-
-    <div class="card" id="card-sentiment">
-      <div class="card-title">
-        <span class="card-title-label">📡 X EARLY NARRATIVES &amp; SENTIMENT</span>
-        <span class="card-updated" id="sentiment-updated"></span>
-      </div>
-      <div class="card-body" id="sentiment-body">
-        <div class="empty-state" id="sentiment-empty-state">Waiting for sentiment intelligence...</div>
-        <ul class="signal-list" id="sentiment-list" hidden></ul>
+      <div class="header-item">
+        <span id="clock">--:--:--</span>
       </div>
     </div>
   </div>
 
-  <div id="watermark">NOT FINANCIAL ADVICE • LIVE DATA INTERFACE</div>
+  <div id="market-board">
+    <div class="mb-cell" data-symbol="BTC/USD">
+      <div class="mb-row-top">
+        <span class="mb-ticker">BTC</span>
+        <span class="mb-change mb-unavailable" id="mb-change-BTC">--</span>
+      </div>
+      <span class="mb-price" id="mb-price-BTC">DATA UNAVAILABLE</span>
+    </div>
+    <div class="mb-cell" data-symbol="ETH/USD">
+      <div class="mb-row-top">
+        <span class="mb-ticker">ETH</span>
+        <span class="mb-change mb-unavailable" id="mb-change-ETH">--</span>
+      </div>
+      <span class="mb-price" id="mb-price-ETH">DATA UNAVAILABLE</span>
+    </div>
+    <div class="mb-cell" data-symbol="SOL/USD">
+      <div class="mb-row-top">
+        <span class="mb-ticker">SOL</span>
+        <span class="mb-change mb-unavailable" id="mb-change-SOL">--</span>
+      </div>
+      <span class="mb-price" id="mb-price-SOL">DATA UNAVAILABLE</span>
+    </div>
+    <div class="mb-cell" data-symbol="XRP/USD">
+      <div class="mb-row-top">
+        <span class="mb-ticker">XRP</span>
+        <span class="mb-change mb-unavailable" id="mb-change-XRP">--</span>
+      </div>
+      <span class="mb-price" id="mb-price-XRP">DATA UNAVAILABLE</span>
+    </div>
+    <div class="mb-cell" data-symbol="BNB/USD">
+      <div class="mb-row-top">
+        <span class="mb-ticker">BNB</span>
+        <span class="mb-change mb-unavailable" id="mb-change-BNB">--</span>
+      </div>
+      <span class="mb-price" id="mb-price-BNB">DATA UNAVAILABLE</span>
+    </div>
+  </div>
+
+  <div id="main-area">
+    <div id="chart-pane">
+      <div class="chart-header">
+        <span class="chart-header-label">BTC/USD &middot; 1M CANDLES</span>
+        <div id="price-row">
+          <span id="btc-price">--</span>
+          <span id="session-change"></span>
+        </div>
+      </div>
+      <div id="chart-area">
+        <div id="chart-container"></div>
+        <div id="chart-fallback">Waiting for live BTC/USD feed...</div>
+      </div>
+    </div>
+
+    <div id="intel-pane">
+      <div class="card" id="card-macro">
+        <div class="card-title">
+          <span class="card-title-label">ETF Flows &amp; System Macro</span>
+          <span class="card-updated" id="macro-updated"></span>
+        </div>
+        <div class="card-body" id="macro-body">
+          <div class="empty-state" id="macro-empty-state">Waiting for macro intelligence...</div>
+          <ul class="signal-list" id="macro-list" hidden></ul>
+        </div>
+      </div>
+
+      <div class="card" id="card-sentiment">
+        <div class="card-title">
+          <span class="card-title-label">X Narratives &amp; Sentiment</span>
+          <span class="card-updated" id="sentiment-updated"></span>
+        </div>
+        <div class="card-body" id="sentiment-body">
+          <div class="empty-state" id="sentiment-empty-state">Waiting for sentiment intelligence...</div>
+          <ul class="signal-list" id="sentiment-list" hidden></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="ticker-strip">
+    <div id="ticker-track"></div>
+  </div>
+
+  <div id="watermark">NOT FINANCIAL ADVICE &bull; LIVE DATA INTERFACE</div>
 </div>
 
 <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <script>
-  // Placeholder for future grok_data.json driven rendering (macro/sentiment cards).
-  // No Supabase logic here — that lives in stream_engine.js / supabase_client.js.
-
+  // Clock — presentational only, driven purely by new Date(), no data source.
+  (function () {
+    const clockEl = document.getElementById("clock");
+    function tick() {
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, "0");
+      const mm = String(now.getMinutes()).padStart(2, "0");
+      const ss = String(now.getSeconds()).padStart(2, "0");
+      clockEl.textContent = `${hh}:${mm}:${ss}`;
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
+</script>
+<script>
   (function () {
     // Kraken instead of Binance: Binance geo-blocks stream.binance.com for
     // US-based server IPs (HTTP 451 at the WebSocket handshake), which broke
@@ -282,6 +592,8 @@
     const statusEl = document.getElementById("connection-status");
     const fallbackEl = document.getElementById("chart-fallback");
     const containerEl = document.getElementById("chart-container");
+    const liveDotEl = document.getElementById("live-dot");
+    const sessionChangeEl = document.getElementById("session-change");
 
     let lastPrice = null;
     let flashTimeout = null;
@@ -289,21 +601,22 @@
     let reconnectTimer = null;
     let socket = null;
     let currentCandle = null;
+    let sessionOpen = null;
 
     const chart = LightweightCharts.createChart(containerEl, {
       layout: {
-        background: { type: "solid", color: "#08090d" },
-        textColor: "#8b93b0",
+        background: { type: "solid", color: "#000000" },
+        textColor: "#7a7a7a",
       },
       grid: {
-        vertLines: { color: "#1f2438" },
-        horzLines: { color: "#1f2438" },
+        vertLines: { color: "#1a1a1a" },
+        horzLines: { color: "#1a1a1a" },
       },
       rightPriceScale: {
-        borderColor: "#1f2438",
+        borderColor: "#1a1a1a",
       },
       timeScale: {
-        borderColor: "#1f2438",
+        borderColor: "#1a1a1a",
         timeVisible: true,
         secondsVisible: false,
       },
@@ -315,11 +628,11 @@
     });
 
     const candleSeries = chart.addCandlestickSeries({
-      upColor: "#34d399",
-      downColor: "#f87171",
+      upColor: "#00ff00",
+      downColor: "#ff3b30",
       borderVisible: false,
-      wickUpColor: "#34d399",
-      wickDownColor: "#f87171",
+      wickUpColor: "#00ff00",
+      wickDownColor: "#ff3b30",
     });
 
     function resizeChart() {
@@ -330,6 +643,11 @@
     function setStatus(state, label) {
       statusEl.textContent = label;
       statusEl.className = state;
+
+      liveDotEl.classList.remove("dot-live", "dot-connecting", "dot-down");
+      if (state === "status-live") liveDotEl.classList.add("dot-live");
+      else if (state === "status-connecting") liveDotEl.classList.add("dot-connecting");
+      else liveDotEl.classList.add("dot-down");
     }
 
     function flashPrice(direction) {
@@ -355,6 +673,16 @@
         else if (newPrice < lastPrice) flashPrice("down");
       }
       lastPrice = newPrice;
+
+      // Session %-change is a presentational derivation from the real candle
+      // stream already flowing through this pipe: current close vs. the
+      // open of the first candle seen this session. No new data source.
+      if (sessionOpen !== null && Number.isFinite(sessionOpen) && sessionOpen !== 0) {
+        const pct = ((newPrice - sessionOpen) / sessionOpen) * 100;
+        const sign = pct > 0 ? "+" : "";
+        sessionChangeEl.textContent = `${sign}${pct.toFixed(2)}% SESSION`;
+        sessionChangeEl.className = pct > 0 ? "mb-up" : pct < 0 ? "mb-down" : "";
+      }
     }
 
     function handleCandle(entry) {
@@ -369,6 +697,10 @@
 
       if (!Number.isFinite(candle.time) || [candle.open, candle.high, candle.low, candle.close].some((v) => !Number.isFinite(v))) {
         return; // Malformed entry — skip rather than feed bad data to the chart.
+      }
+
+      if (sessionOpen === null && Number.isFinite(candle.open)) {
+        sessionOpen = candle.open;
       }
 
       candleSeries.update(candle);
@@ -410,6 +742,12 @@
             channel: "ohlc",
             symbol: [SYMBOL],
             interval: OHLC_INTERVAL_MINUTES,
+            // Explicitly request the historical backfill Kraken's v2 OHLC
+            // channel can send on subscribe. Without a batch of prior
+            // candles, the chart only ever has the single in-progress
+            // candle to show — visually indistinguishable from "broken"
+            // even though data is flowing correctly.
+            snapshot: true,
           },
         }));
       });
@@ -418,7 +756,14 @@
         try {
           const payload = JSON.parse(event.data);
           if (payload && payload.channel === "ohlc" && Array.isArray(payload.data)) {
+            const isInitialBatch = !currentCandle && payload.data.length > 1;
             payload.data.forEach(handleCandle);
+            // After an initial multi-candle snapshot arrives, fit the
+            // timescale to it so the history is actually visible instead
+            // of leaving the view zoomed on a single bar at the far edge.
+            if (isInitialBatch) {
+              chart.timeScale().fitContent();
+            }
           }
         } catch (err) {
           // Ignore malformed frames; wait for the next valid message.
@@ -562,6 +907,236 @@
     // Age labels ("Updated Xh ago") drift with real time even between
     // polls, so refresh them independently on a slower cadence.
     setInterval(updateAgeLabels, 30_000);
+  })();
+</script>
+<script>
+  // Market board — compact multi-asset snapshot ("is the broader market
+  // moving with BTC?"). Fully isolated from the BTC/USD chart script above:
+  // its own WebSocket connection, its own reconnect logic, its own DOM
+  // targets. Removing this block removes only this feature; it shares no
+  // state with the chart or the Grok panels.
+  //
+  // Data source: Kraken's v2 WebSocket "ticker" channel (the same exchange
+  // already used for the BTC chart — no new API introduced). If Kraken
+  // does not carry a given pair (e.g. it may not list BNB/USD) or a
+  // subscription is rejected, that asset explicitly shows
+  // "DATA UNAVAILABLE" rather than any simulated/fake value. A price is
+  // only ever displayed after a real message for that exact symbol has
+  // been received.
+  //
+  // The bottom ticker strip mirrors this same data (no third WebSocket):
+  // renderAsset() updates both the market-tape cell and the matching
+  // ticker-strip entry in one place. Unavailable assets (e.g. BNB) are
+  // simply omitted from the scrolling strip.
+
+  (function () {
+    const STREAM_URL = "wss://ws.kraken.com/v2";
+    const ASSETS = [
+      { symbol: "BTC/USD", ticker: "BTC" },
+      { symbol: "ETH/USD", ticker: "ETH" },
+      { symbol: "SOL/USD", ticker: "SOL" },
+      { symbol: "XRP/USD", ticker: "XRP" },
+      { symbol: "BNB/USD", ticker: "BNB" },
+    ];
+    const RECONNECT_BASE_DELAY_MS = 1000;
+    const RECONNECT_MAX_DELAY_MS = 30000;
+    const UNAVAILABLE_TIMEOUT_MS = 12000; // if nothing arrives for a symbol by then, mark unavailable
+
+    let socket = null;
+    let reconnectAttempts = 0;
+    let reconnectTimer = null;
+    const unavailableTimers = {};
+    const receivedData = {};
+    const tickerState = {}; // ticker -> { last, changePct } for the bottom scroll strip
+
+    const tickerTrackEl = document.getElementById("ticker-track");
+
+    function priceEl(ticker) { return document.getElementById(`mb-price-${ticker}`); }
+    function changeEl(ticker) { return document.getElementById(`mb-change-${ticker}`); }
+
+    function renderTickerStrip() {
+      const order = ["BTC", "ETH", "SOL", "XRP", "BNB"];
+      const parts = [];
+      order.forEach((ticker) => {
+        const state = tickerState[ticker];
+        if (!state || !Number.isFinite(state.last)) return; // omit unavailable assets
+
+        const priceStr = state.last.toLocaleString("en-US", {
+          minimumFractionDigits: state.last >= 100 ? 2 : 4,
+          maximumFractionDigits: state.last >= 100 ? 2 : 4,
+        });
+
+        let changeHtml = "";
+        let cls = "t-flat";
+        if (Number.isFinite(state.changePct)) {
+          const arrow = state.changePct > 0 ? "▲" : state.changePct < 0 ? "▼" : "●";
+          cls = state.changePct > 0 ? "t-up" : state.changePct < 0 ? "t-down" : "t-flat";
+          changeHtml = ` <span class="${cls}">${arrow}${Math.abs(state.changePct).toFixed(2)}%</span>`;
+        }
+
+        const item = document.createElement("span");
+        item.className = "ticker-item";
+        const tickerSpan = document.createElement("span");
+        tickerSpan.className = "t-ticker";
+        tickerSpan.textContent = ticker;
+        item.appendChild(tickerSpan);
+
+        const priceSpan = document.createElement("span");
+        priceSpan.textContent = priceStr;
+        item.appendChild(priceSpan);
+
+        if (Number.isFinite(state.changePct)) {
+          const changeSpan = document.createElement("span");
+          changeSpan.className = cls;
+          const arrow = state.changePct > 0 ? "▲" : state.changePct < 0 ? "▼" : "●";
+          changeSpan.textContent = ` ${arrow}${Math.abs(state.changePct).toFixed(2)}%`;
+          item.appendChild(changeSpan);
+        }
+
+        parts.push(item);
+      });
+
+      tickerTrackEl.textContent = "";
+      if (!parts.length) return;
+      // Duplicate the sequence so the CSS translateX(-100%) loop is seamless.
+      parts.forEach((el) => tickerTrackEl.appendChild(el));
+      parts.forEach((el) => tickerTrackEl.appendChild(el.cloneNode(true)));
+    }
+
+    function markUnavailable(ticker) {
+      if (receivedData[ticker]) return; // already have real data — don't overwrite it
+      const pEl = priceEl(ticker);
+      const cEl = changeEl(ticker);
+      if (pEl) {
+        pEl.textContent = "DATA UNAVAILABLE";
+        pEl.classList.add("mb-unavailable-price");
+      }
+      if (cEl) {
+        cEl.textContent = "--";
+        cEl.className = "mb-change mb-unavailable";
+      }
+      delete tickerState[ticker];
+      renderTickerStrip();
+    }
+
+    function renderAsset(ticker, last, changePct) {
+      if (!Number.isFinite(last)) {
+        markUnavailable(ticker);
+        return;
+      }
+
+      receivedData[ticker] = true;
+      if (unavailableTimers[ticker]) {
+        clearTimeout(unavailableTimers[ticker]);
+        unavailableTimers[ticker] = null;
+      }
+
+      const pEl = priceEl(ticker);
+      const cEl = changeEl(ticker);
+      if (pEl) {
+        pEl.classList.remove("mb-unavailable-price");
+        pEl.textContent = last.toLocaleString("en-US", {
+          minimumFractionDigits: last >= 100 ? 2 : 4,
+          maximumFractionDigits: last >= 100 ? 2 : 4,
+        });
+      }
+      if (cEl) {
+        if (Number.isFinite(changePct)) {
+          const sign = changePct > 0 ? "+" : "";
+          cEl.textContent = `${sign}${changePct.toFixed(2)}%`;
+          cEl.className = "mb-change " + (changePct > 0 ? "mb-up" : changePct < 0 ? "mb-down" : "");
+        } else {
+          cEl.textContent = "--";
+          cEl.className = "mb-change mb-unavailable";
+        }
+      }
+
+      tickerState[ticker] = { last, changePct };
+      renderTickerStrip();
+    }
+
+    function handleTickerEntry(entry) {
+      if (!entry || typeof entry.symbol !== "string") return;
+      const asset = ASSETS.find((a) => a.symbol === entry.symbol);
+      if (!asset) return;
+
+      const last = parseFloat(entry.last);
+      const changePct = parseFloat(entry.change_pct);
+      renderAsset(asset.ticker, last, changePct);
+    }
+
+    function scheduleReconnect() {
+      if (reconnectTimer) return;
+      const delay = Math.min(
+        RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempts),
+        RECONNECT_MAX_DELAY_MS
+      );
+      reconnectAttempts += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    }
+
+    function connect() {
+      try {
+        socket = new WebSocket(STREAM_URL);
+      } catch (err) {
+        scheduleReconnect();
+        return;
+      }
+
+      socket.addEventListener("open", () => {
+        reconnectAttempts = 0;
+        socket.send(JSON.stringify({
+          method: "subscribe",
+          params: {
+            channel: "ticker",
+            symbol: ASSETS.map((a) => a.symbol),
+          },
+        }));
+
+        // Backstop: if a given symbol never produces a valid message
+        // (unsupported pair, silently dropped subscription, etc.), show
+        // its explicit unavailable state rather than leaving a stale
+        // "Connecting" look forever.
+        ASSETS.forEach((asset) => {
+          if (receivedData[asset.ticker]) return;
+          unavailableTimers[asset.ticker] = setTimeout(() => {
+            markUnavailable(asset.ticker);
+          }, UNAVAILABLE_TIMEOUT_MS);
+        });
+      });
+
+      socket.addEventListener("message", (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+
+          // Explicit per-symbol subscription rejection (e.g. pair not listed).
+          if (payload && payload.method === "subscribe" && payload.success === false && payload.result) {
+            const asset = ASSETS.find((a) => a.symbol === payload.result.symbol);
+            if (asset) markUnavailable(asset.ticker);
+            return;
+          }
+
+          if (payload && payload.channel === "ticker" && Array.isArray(payload.data)) {
+            payload.data.forEach(handleTickerEntry);
+          }
+        } catch (err) {
+          // Ignore malformed frames; wait for the next valid message.
+        }
+      });
+
+      socket.addEventListener("close", () => {
+        scheduleReconnect();
+      });
+
+      socket.addEventListener("error", () => {
+        if (socket) socket.close();
+      });
+    }
+
+    connect();
   })();
 </script>
 </body>
