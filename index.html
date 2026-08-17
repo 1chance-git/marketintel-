@@ -222,7 +222,7 @@
 <div id="stage">
   <div id="left-pane" class="pane">
     <div class="chart-header">
-      <span class="chart-header-label">BTC/USDT · 1M</span>
+      <span class="chart-header-label">BTC/USD · 1M</span>
       <div id="price-row">
         <span id="btc-price">--</span>
         <span id="connection-status" class="status-connecting">Connecting...</span>
@@ -230,7 +230,7 @@
     </div>
     <div id="chart-area">
       <div id="chart-container"></div>
-      <div id="chart-fallback">Waiting for live BTC/USDT feed...</div>
+      <div id="chart-fallback">Waiting for live BTC/USD feed...</div>
     </div>
   </div>
 
@@ -267,8 +267,14 @@
   // No Supabase logic here — that lives in stream_engine.js / supabase_client.js.
 
   (function () {
-    const SYMBOL = "btcusdt";
-    const STREAM_URL = `wss://stream.binance.com:9443/ws/${SYMBOL}@kline_1m`;
+    // Kraken instead of Binance: Binance geo-blocks stream.binance.com for
+    // US-based server IPs (HTTP 451 at the WebSocket handshake), which broke
+    // this on our US-region Railway deployment. Kraken is US-compliant and
+    // has no such block. BTC/USD is Kraken's primary, most liquid pair —
+    // labeled accordingly rather than as BTC/USDT.
+    const SYMBOL = "BTC/USD";
+    const STREAM_URL = "wss://ws.kraken.com/v2";
+    const OHLC_INTERVAL_MINUTES = 1;
     const RECONNECT_BASE_DELAY_MS = 1000;
     const RECONNECT_MAX_DELAY_MS = 30000;
 
@@ -351,14 +357,19 @@
       lastPrice = newPrice;
     }
 
-    function handleKline(kline) {
+    function handleCandle(entry) {
+      const time = Math.floor(new Date(entry.interval_begin).getTime() / 1000);
       const candle = {
-        time: Math.floor(kline.t / 1000),
-        open: parseFloat(kline.o),
-        high: parseFloat(kline.h),
-        low: parseFloat(kline.l),
-        close: parseFloat(kline.c),
+        time,
+        open: parseFloat(entry.open),
+        high: parseFloat(entry.high),
+        low: parseFloat(entry.low),
+        close: parseFloat(entry.close),
       };
+
+      if (!Number.isFinite(candle.time) || [candle.open, candle.high, candle.low, candle.close].some((v) => !Number.isFinite(v))) {
+        return; // Malformed entry — skip rather than feed bad data to the chart.
+      }
 
       candleSeries.update(candle);
       currentCandle = candle;
@@ -393,13 +404,21 @@
       socket.addEventListener("open", () => {
         reconnectAttempts = 0;
         setStatus("status-live", "Live");
+        socket.send(JSON.stringify({
+          method: "subscribe",
+          params: {
+            channel: "ohlc",
+            symbol: [SYMBOL],
+            interval: OHLC_INTERVAL_MINUTES,
+          },
+        }));
       });
 
       socket.addEventListener("message", (event) => {
         try {
           const payload = JSON.parse(event.data);
-          if (payload && payload.k) {
-            handleKline(payload.k);
+          if (payload && payload.channel === "ohlc" && Array.isArray(payload.data)) {
+            payload.data.forEach(handleCandle);
           }
         } catch (err) {
           // Ignore malformed frames; wait for the next valid message.
@@ -422,7 +441,7 @@
 </script>
 <script>
   // Grok/sentiment data display — reads ./grok_data.json on a 5s poll.
-  // Does not touch the Binance WebSocket/chart logic above, and does not
+  // Does not touch the Kraken WebSocket/chart logic above, and does not
   // reload the page or refresh the layout.
 
   (function () {
