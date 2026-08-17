@@ -336,7 +336,7 @@ export class VideoEngine {
     this.scheduleNextFrame();
   }
 
-  scheduleNextFrame() {
+  scheduleNextFrame(lastFrameElapsedMs = 0) {
     if (!this.capturing) return;
 
     if (this.durationMs !== null) {
@@ -350,9 +350,14 @@ export class VideoEngine {
     // runs until finishCapture()/shutdown() is triggered externally (e.g.
     // SIGINT/SIGTERM, or a fatal error elsewhere in the pipeline).
 
+    // Drift-corrected pacing: only wait the remaining slice of the frame
+    // interval, not the full interval on top of however long capture just
+    // took. If capture already exceeded the interval, fire immediately.
+    const delay = Math.max(0, FRAME_INTERVAL_MS - lastFrameElapsedMs);
+
     this.captureTimer = setTimeout(() => {
       this.captureFrame();
-    }, FRAME_INTERVAL_MS);
+    }, delay);
   }
 
   async captureFrame() {
@@ -392,7 +397,7 @@ export class VideoEngine {
       console.warn(`[VIDEO_ENGINE] Frame ${this.frameCount} took ${frameElapsed}ms (target ${FRAME_INTERVAL_MS.toFixed(1)}ms)`);
     }
 
-    this.scheduleNextFrame();
+    this.scheduleNextFrame(frameElapsed);
   }
 
   finishCapture() {
