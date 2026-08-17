@@ -223,11 +223,11 @@ function spawnFfmpeg({ destination, mode }) {
 
 export class VideoEngine {
   constructor({
-    durationMs = 60_000,
+    durationMs = 60_000, // null/undefined-safe: pass null explicitly for continuous (no fixed end) capture
     outputPath = path.resolve("./local_stream_test.mp4"),
     rootDir = path.resolve("."),
   } = {}) {
-    this.durationMs = durationMs;
+    this.durationMs = durationMs ?? null;
     this.outputPath = outputPath;
     this.rootDir = rootDir;
     this.outputTarget = resolveOutputTarget(this.outputPath);
@@ -329,7 +329,8 @@ export class VideoEngine {
     const destinationLabel = this.outputTarget.mode === "rtmp"
       ? "YouTube RTMP (destination redacted)"
       : this.outputTarget.destination;
-    console.log(`[VIDEO_ENGINE] Capturing at ${CAPTURE_FPS}fps for ${this.durationMs / 1000}s -> ${destinationLabel}`);
+    const durationLabel = this.durationMs === null ? "continuously (until stopped)" : `for ${this.durationMs / 1000}s`;
+    console.log(`[VIDEO_ENGINE] Capturing at ${CAPTURE_FPS}fps ${durationLabel} -> ${destinationLabel}`);
     this.capturing = true;
     this.startTime = Date.now();
     this.scheduleNextFrame();
@@ -338,11 +339,16 @@ export class VideoEngine {
   scheduleNextFrame() {
     if (!this.capturing) return;
 
-    const elapsed = Date.now() - this.startTime;
-    if (elapsed >= this.durationMs) {
-      this.finishCapture();
-      return;
+    if (this.durationMs !== null) {
+      const elapsed = Date.now() - this.startTime;
+      if (elapsed >= this.durationMs) {
+        this.finishCapture();
+        return;
+      }
     }
+    // durationMs === null means continuous capture: no elapsed-time check,
+    // runs until finishCapture()/shutdown() is triggered externally (e.g.
+    // SIGINT/SIGTERM, or a fatal error elsewhere in the pipeline).
 
     this.captureTimer = setTimeout(() => {
       this.captureFrame();
@@ -463,6 +469,25 @@ if (isMainModule()) {
     const videoEngine = new VideoEngine({ durationMs });
 
     const shutdown = () => {
+      videoEngine.shutdown(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+
+    videoEngine.run();
+  } else if (args.includes("--live")) {
+    // Production broadcast mode: Supabase polling and continuous video
+    // capture run together in one process, so a single process supervisor
+    // (pm2/systemd/Docker restart policy) keeps the whole pipeline alive.
+    console.log("[STREAM_ENGINE] Live mode: starting Supabase poller + continuous video capture");
+
+    const engine = new StreamEngine();
+    engine.start();
+
+    const videoEngine = new VideoEngine({ durationMs: null });
+
+    const shutdown = () => {
+      engine.stop();
       videoEngine.shutdown(0);
     };
     process.on("SIGINT", shutdown);
