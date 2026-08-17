@@ -1,0 +1,5 @@
+.git
+node_modules
+local_stream_test.mp4
+*.mp4
+*.log
