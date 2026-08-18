@@ -268,7 +268,21 @@ function resolveOutputTarget(localOutputPath) {
 function spawnFfmpeg({ destination, mode }) {
   const encodingArgs = [
     "-c:v", "libx264",
-    "-preset", "veryfast",
+    // "ultrafast" instead of "veryfast": production CPU metrics showed
+    // usage spiking above the container's 2 vCPU limit (avg 1.19, max
+    // 2.49 over a 1h window), causing throttling shared between
+    // Puppeteer/Chromium (rendering + screencast capture) and this x264
+    // encode - both run in the same container. Under the earlier
+    // -readrate fix, that throttling can no longer be silently absorbed
+    // by FFmpeg racing ahead to catch up (that overshoot is exactly what
+    // -readrate correctly prevents), so it instead compounded into a
+    // measured, steadily growing live-stream delay (~1.4s at 10s in,
+    // ~10.2s by 210s in) and YouTube's "not receiving enough video"
+    // buffering warning. ultrafast trades some compression efficiency
+    // for substantially lower CPU cost at the same forced 2500Kbps CBR
+    // target (see -b:v/-x264-params below) - bitrate/quality floor is
+    // unchanged, only encode speed improves.
+    "-preset", "ultrafast",
     "-pix_fmt", "yuv420p",
     "-r", String(CAPTURE_FPS),
     "-s", `${CAPTURE_WIDTH}x${CAPTURE_HEIGHT}`,
