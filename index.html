@@ -776,6 +776,14 @@
     const unavailableTimers = {};
 
     let activeTicker = "BTC";
+    // Tracks whichever asset the chart series has actually been
+    // setData()'d for — distinct from activeTicker, which flips
+    // immediately on rotation while the chart swap itself is deferred
+    // behind the 200ms fade. Live candle updates must only apply to the
+    // series once it's actually showing that asset, or a candle for the
+    // new ticker could land mid-fade and get update()'d onto the chart
+    // while it still holds the outgoing asset's series data.
+    let renderedTicker = "BTC";
     let flashTimeout = null;
     let reconnectAttempts = 0;
     let reconnectTimer = null;
@@ -903,6 +911,7 @@
         containerEl.style.display = "none";
         fallbackEl.style.display = "none";
         unavailableEl.style.display = "flex";
+        renderedTicker = ticker;
         return;
       }
 
@@ -919,6 +928,7 @@
 
       candleSeries.setData(candles);
       chart.timeScale().fitContent();
+      renderedTicker = ticker;
       renderActiveHeader();
     }
 
@@ -999,10 +1009,17 @@
       state.lastPrice = candle.close;
 
       // Keep all four assets' background state current; only touch the
-      // live chart/series/header when the update is for the visible asset.
-      if (ticker === activeTicker) {
+      // live chart series once it's actually showing this asset (not
+      // merely "about to" — activeTicker flips immediately on rotation,
+      // but the series swap is deferred behind the fade, so gate on
+      // renderedTicker to avoid updating the outgoing asset's series with
+      // the incoming asset's candle mid-fade). The header can still
+      // reflect activeTicker immediately since it's not chart-series state.
+      if (ticker === renderedTicker) {
         candleSeries.update(candle);
         fallbackEl.style.display = "none";
+      }
+      if (ticker === activeTicker) {
         let flash = null;
         if (prevPrice !== null) {
           if (candle.close > prevPrice) flash = "up";
