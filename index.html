@@ -463,17 +463,6 @@
     padding: 6px 12px;
   }
 
-  .term-section-label {
-    font-size: 8.5px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: #5a5a5a;
-    padding-bottom: 2px;
-    margin-bottom: 1px;
-    border-bottom: 1px solid #1a1a1a;
-  }
-
   .term-rows {
     list-style: none;
     margin: 0;
@@ -547,10 +536,33 @@
 
   /* Only one section is ever shown at a time now (vs. two stacked
      sections previously sharing the card), so rows can run a bit larger
-     for broadcast readability without risking overflow. */
+     for broadcast readability without risking overflow. Rows also switch
+     from a single-line label/value pair to a stacked label-above-value
+     layout that wraps fully — the compact single-line right-aligned
+     value used to hard-clip long Grok sentences (e.g. long REGULATION or
+     narrative lines) with no ellipsis. With only one section's rows on
+     screen at a time there is ample vertical room to show the complete
+     text instead of truncating it. */
   .rotator-body .term-rows li {
-    padding: 7px 0;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    padding: 8px 0;
     font-size: 13px;
+  }
+
+  .rotator-body .term-row-label {
+    max-width: 100%;
+  }
+
+  .rotator-body .term-row-value {
+    flex: 1 1 auto;
+    width: 100%;
+    text-align: left;
+    overflow: visible;
+    display: block;
+    -webkit-line-clamp: unset;
+    -webkit-box-orient: unset;
   }
 
   .rotator-body .empty-state {
