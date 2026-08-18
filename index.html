@@ -149,24 +149,30 @@
   .mb-cell {
     flex: 1;
     display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: 3px;
-    padding: 5px 14px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 14px;
     border-right: 1px solid #1a1a1a;
     min-width: 0;
     line-height: 1.1;
+    transition: background-color 300ms ease-out;
   }
 
   .mb-cell:last-child {
     border-right: none;
   }
 
+  .mb-cell.mb-flash {
+    background-color: #0a1a0a;
+  }
+
   .mb-row-top {
+    flex: 0 0 auto;
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
+    gap: 6px;
   }
 
   .mb-ticker {
@@ -174,23 +180,28 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     color: #7a7a7a;
+    white-space: nowrap;
   }
 
   .mb-price {
-    font-size: 15px;
+    flex: 1 1 auto;
+    font-size: 14px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     color: #e8e8e8;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    text-align: right;
   }
 
   .mb-change {
+    flex: 0 0 auto;
     font-size: 10.5px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     text-align: right;
+    min-width: 46px;
   }
 
   .mb-change.mb-up { color: #00ff00; }
@@ -428,6 +439,97 @@
     border-bottom: none;
   }
 
+  /* ---------- Terminal-style intelligence rows ---------- */
+  .term-body {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    text-align: left;
+    overflow-y: auto;
+    gap: 6px;
+    padding: 6px 12px;
+  }
+
+  .term-section-label {
+    font-size: 8.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #5a5a5a;
+    padding-bottom: 2px;
+    margin-bottom: 1px;
+    border-bottom: 1px solid #1a1a1a;
+  }
+
+  .term-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .term-rows li {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 2px 0;
+    border-bottom: 1px solid #141414;
+    font-size: 10.5px;
+    line-height: 1.25;
+  }
+
+  .term-rows li:last-child {
+    border-bottom: none;
+  }
+
+  .term-row-label {
+    flex: 0 0 auto;
+    max-width: 44%;
+    color: #8a8a8a;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .term-row-value {
+    flex: 1 1 auto;
+    text-align: right;
+    color: #e8e8e8;
+    letter-spacing: 0.01em;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+  }
+
+  .term-row-value.term-tone-up { color: #00ff00; }
+  .term-row-value.term-tone-down { color: #ff3b30; }
+
+  /* Sentiment panel's single DIRECTION readout — bolder than a normal row
+     value but still row-height, not a giant headline. */
+  .term-direction-value {
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+  }
+
+  /* "What Matters Now" reads as one highlighted broadcast block rather
+     than another plain row-section — a muted amber accent (reusing the
+     existing connecting-status amber, not a new color), not a gradient
+     or rounded card. */
+  .term-section.term-highlight {
+    border: 1px solid #262210;
+    background: #0b0a06;
+    padding: 5px 8px;
+  }
+
+  .term-section.term-highlight .term-section-label {
+    color: #d4b34a;
+    border-bottom-color: #262210;
+  }
+
   /* ---------- 5. BOTTOM TICKER ---------- */
   #ticker-strip {
     flex: 0 0 22px;
@@ -514,40 +616,33 @@
   </div>
 
   <div id="market-board">
-    <div class="mb-cell" data-symbol="BTC/USD">
+    <div class="mb-cell" data-symbol="BTC/USD" id="mb-cell-BTC">
       <div class="mb-row-top">
-        <span class="mb-ticker">BTC</span>
-        <span class="mb-change mb-unavailable" id="mb-change-BTC">--</span>
+        <span class="mb-ticker">BTC/USD</span>
       </div>
       <span class="mb-price" id="mb-price-BTC">DATA UNAVAILABLE</span>
+      <span class="mb-change mb-unavailable" id="mb-change-BTC">--</span>
     </div>
-    <div class="mb-cell" data-symbol="ETH/USD">
+    <div class="mb-cell" data-symbol="ETH/USD" id="mb-cell-ETH">
       <div class="mb-row-top">
-        <span class="mb-ticker">ETH</span>
-        <span class="mb-change mb-unavailable" id="mb-change-ETH">--</span>
+        <span class="mb-ticker">ETH/USD</span>
       </div>
       <span class="mb-price" id="mb-price-ETH">DATA UNAVAILABLE</span>
+      <span class="mb-change mb-unavailable" id="mb-change-ETH">--</span>
     </div>
-    <div class="mb-cell" data-symbol="SOL/USD">
+    <div class="mb-cell" data-symbol="SOL/USD" id="mb-cell-SOL">
       <div class="mb-row-top">
-        <span class="mb-ticker">SOL</span>
-        <span class="mb-change mb-unavailable" id="mb-change-SOL">--</span>
+        <span class="mb-ticker">SOL/USD</span>
       </div>
       <span class="mb-price" id="mb-price-SOL">DATA UNAVAILABLE</span>
+      <span class="mb-change mb-unavailable" id="mb-change-SOL">--</span>
     </div>
-    <div class="mb-cell" data-symbol="XRP/USD">
+    <div class="mb-cell" data-symbol="XRP/USD" id="mb-cell-XRP">
       <div class="mb-row-top">
-        <span class="mb-ticker">XRP</span>
-        <span class="mb-change mb-unavailable" id="mb-change-XRP">--</span>
+        <span class="mb-ticker">XRP/USD</span>
       </div>
       <span class="mb-price" id="mb-price-XRP">DATA UNAVAILABLE</span>
-    </div>
-    <div class="mb-cell" data-symbol="BNB/USD">
-      <div class="mb-row-top">
-        <span class="mb-ticker">BNB</span>
-        <span class="mb-change mb-unavailable" id="mb-change-BNB">--</span>
-      </div>
-      <span class="mb-price" id="mb-price-BNB">DATA UNAVAILABLE</span>
+      <span class="mb-change mb-unavailable" id="mb-change-XRP">--</span>
     </div>
   </div>
 
@@ -579,9 +674,16 @@
           <span class="card-title-label">ETF Flows &amp; System Macro</span>
           <span class="card-updated" id="macro-updated"></span>
         </div>
-        <div class="card-body" id="macro-body">
+        <div class="card-body term-body" id="macro-body">
           <div class="empty-state" id="macro-empty-state">Waiting for macro intelligence...</div>
-          <ul class="signal-list" id="macro-list" hidden></ul>
+          <div class="term-section" id="macro-etf-section" hidden>
+            <div class="term-section-label">ETF / Institutional Flow</div>
+            <ul class="term-rows" id="macro-etf-list"></ul>
+          </div>
+          <div class="term-section" id="macro-system-section" hidden>
+            <div class="term-section-label">Macro Pulse</div>
+            <ul class="term-rows" id="macro-system-list"></ul>
+          </div>
         </div>
       </div>
 
@@ -590,9 +692,20 @@
           <span class="card-title-label">X Narratives &amp; Sentiment</span>
           <span class="card-updated" id="sentiment-updated"></span>
         </div>
-        <div class="card-body" id="sentiment-body">
+        <div class="card-body term-body" id="sentiment-body">
           <div class="empty-state" id="sentiment-empty-state">Waiting for sentiment intelligence...</div>
-          <ul class="signal-list" id="sentiment-list" hidden></ul>
+          <div class="term-section" id="sentiment-narrative-section" hidden>
+            <div class="term-section-label">X Narrative Pulse</div>
+            <ul class="term-rows" id="sentiment-narrative-list"></ul>
+          </div>
+          <div class="term-section" id="sentiment-tone-section" hidden>
+            <div class="term-section-label">Market Sentiment</div>
+            <ul class="term-rows" id="sentiment-tone-list"></ul>
+          </div>
+          <div class="term-section term-highlight" id="whatnow-section" hidden>
+            <div class="term-section-label">What Matters Now</div>
+            <ul class="term-rows" id="whatnow-list"></ul>
+          </div>
         </div>
       </div>
     </div>
@@ -632,8 +745,7 @@
     // subscribes to all four rotating assets at once. Each asset's candle
     // history is kept fresh in the background continuously; a timer swaps
     // which asset's already-held data is shown via series.setData(), with
-    // no re-subscribe/reconnect on rotation. BNB is intentionally excluded
-    // — it stays tape-only, driven by the separate market-board script.
+    // no re-subscribe/reconnect on rotation.
     const ROTATION_ASSETS = ["BTC", "ETH", "SOL", "XRP"];
     const SYMBOL_OF = { BTC: "BTC/USD", ETH: "ETH/USD", SOL: "SOL/USD", XRP: "XRP/USD" };
     const TICKER_OF = { "BTC/USD": "BTC", "ETH/USD": "ETH", "SOL/USD": "SOL", "XRP/USD": "XRP" };
@@ -999,9 +1111,17 @@
     const DATA_URL = "./grok_data.json";
 
     const macroEmptyEl = document.getElementById("macro-empty-state");
-    const macroListEl = document.getElementById("macro-list");
+    const macroEtfSectionEl = document.getElementById("macro-etf-section");
+    const macroEtfListEl = document.getElementById("macro-etf-list");
+    const macroSystemSectionEl = document.getElementById("macro-system-section");
+    const macroSystemListEl = document.getElementById("macro-system-list");
     const sentimentEmptyEl = document.getElementById("sentiment-empty-state");
-    const sentimentListEl = document.getElementById("sentiment-list");
+    const sentimentNarrativeSectionEl = document.getElementById("sentiment-narrative-section");
+    const sentimentNarrativeListEl = document.getElementById("sentiment-narrative-list");
+    const sentimentToneSectionEl = document.getElementById("sentiment-tone-section");
+    const sentimentToneListEl = document.getElementById("sentiment-tone-list");
+    const whatNowSectionEl = document.getElementById("whatnow-section");
+    const whatNowListEl = document.getElementById("whatnow-list");
     const macroUpdatedEl = document.getElementById("macro-updated");
     const sentimentUpdatedEl = document.getElementById("sentiment-updated");
 
@@ -1042,35 +1162,270 @@
       return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
     }
 
-    function renderList(listEl, emptyEl, items) {
-      listEl.textContent = "";
-
-      if (!items.length) {
-        listEl.hidden = true;
-        emptyEl.hidden = false;
-        return;
+    // Grok's signal fields are free-form sentences, not structured
+    // key/value data. Most of them already follow a "Label: detail"
+    // shape (e.g. "Fear & Greed Index: ~34-37 (Fear)") - splitting on the
+    // first colon turns that into a compact terminal row without
+    // inventing anything not present in the source text. A colon found
+    // very late in the sentence is treated as incidental punctuation
+    // rather than a label separator.
+    function splitLabelValue(text) {
+      const idx = text.indexOf(":");
+      if (idx === -1 || idx > 40) {
+        return { label: null, value: text };
       }
+      return { label: text.slice(0, idx).trim(), value: text.slice(idx + 1).trim() };
+    }
 
-      emptyEl.hidden = true;
-      listEl.hidden = false;
+    function shortenLabel(label) {
+      return label
+        .toUpperCase()
+        .replace(/\b(INDEX|INDICATORS|CALENDAR)\b/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
 
+    // Purely presentational tone coloring, derived from words already
+    // present in the Grok text itself (never a new/invented value). A
+    // sentence mentioning both directions (e.g. "outflows on BTC,
+    // selective ETH inflows") reads as mixed/neutral rather than picking
+    // a side.
+    const TONE_DOWN_WORDS = ["outflow", "bearish", "fear", "thin", "muted", "delayed", "cautious", "risk-off"];
+    const TONE_UP_WORDS = ["inflow", "bullish", "greed", "risk-on", "improving", "strong", "robust"];
+
+    function classifyTone(text) {
+      const lower = text.toLowerCase();
+      const hasDown = TONE_DOWN_WORDS.some((w) => lower.includes(w));
+      const hasUp = TONE_UP_WORDS.some((w) => lower.includes(w));
+      if (hasUp && !hasDown) return "up";
+      if (hasDown && !hasUp) return "down";
+      return "flat";
+    }
+
+    // Same word lists/approach as classifyTone(), but exposes the
+    // "both directions present" case as its own MIXED state rather than
+    // collapsing it into the same bucket as "no signal words at all".
+    function classifyDirection(text) {
+      const lower = text.toLowerCase();
+      const hasDown = TONE_DOWN_WORDS.some((w) => lower.includes(w));
+      const hasUp = TONE_UP_WORDS.some((w) => lower.includes(w));
+      if (hasUp && hasDown) return "MIXED";
+      if (hasUp) return "BULLISH";
+      if (hasDown) return "BEARISH";
+      return "NEUTRAL";
+    }
+
+    function directionTone(direction) {
+      if (direction === "BULLISH") return "up";
+      if (direction === "BEARISH") return "down";
+      return "flat";
+    }
+
+    // Maps a macro row's derived label onto one of the 4 canonical
+    // broadcast indicator names when the underlying text is clearly about
+    // that topic. Falls back to the generic shortened label for anything
+    // else, so future/unexpected macro lines still render sensibly.
+    const MACRO_LABEL_MAP = [
+      { pattern: /FEAR|GREED/, label: "FEAR/GREED" },
+      { pattern: /REGULAT/, label: "REGULATION" },
+      { pattern: /LIQUID/, label: "LIQUIDITY" },
+      { pattern: /VOLUME/, label: "VOLUME" },
+    ];
+
+    function canonicalMacroLabel(label, raw) {
+      const probe = (label || raw).toUpperCase();
+      const match = MACRO_LABEL_MAP.find((m) => m.pattern.test(probe));
+      if (match) return match.label;
+      return label ? shortenLabel(label) : "—";
+    }
+
+    function renderRows(listEl, items) {
+      listEl.textContent = "";
       const fragment = document.createDocumentFragment();
-      items.forEach((text) => {
+
+      items.forEach((raw) => {
+        const { label, value } = splitLabelValue(raw);
         const li = document.createElement("li");
-        li.textContent = text; // textContent only — never innerHTML — to prevent HTML injection.
+
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = label ? shortenLabel(label) : "—";
+
+        const valueSpan = document.createElement("span");
+        valueSpan.className = `term-row-value term-tone-${classifyTone(raw)}`;
+        valueSpan.textContent = (label ? value : raw).toUpperCase();
+
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
         fragment.appendChild(li);
       });
+
+      listEl.appendChild(fragment);
+    }
+
+    // Splits the existing x_narratives array across 3 fixed broadcast
+    // slots by position — item 0 is the strongest/first-listed narrative
+    // Grok reported, item 1 the next, item 2 whatever came after. This is
+    // purely a labeling/order transformation of real array entries, never
+    // invented text. A row is only shown if that array index exists.
+    const NARRATIVE_SLOT_LABELS = ["TOP NARRATIVE", "EMERGING THEME", "MARKET TALK"];
+
+    function renderNarrativeBreakdown(listEl, items) {
+      listEl.textContent = "";
+      const fragment = document.createDocumentFragment();
+
+      items.slice(0, NARRATIVE_SLOT_LABELS.length).forEach((raw, i) => {
+        const li = document.createElement("li");
+
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = NARRATIVE_SLOT_LABELS[i];
+
+        const valueSpan = document.createElement("span");
+        valueSpan.className = "term-row-value";
+        valueSpan.textContent = raw.toUpperCase(); // textContent only — never innerHTML — to prevent HTML injection.
+
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
+        fragment.appendChild(li);
+      });
+
+      listEl.appendChild(fragment);
+    }
+
+    // Macro Pulse rows use canonical broadcast indicator names
+    // (FEAR/GREED, REGULATION, LIQUIDITY, VOLUME) instead of the raw
+    // sentence label, while the value stays exactly the derived text —
+    // no numeric value is invented, only the label is normalized.
+    function renderMacroPulse(listEl, items) {
+      listEl.textContent = "";
+      const fragment = document.createDocumentFragment();
+
+      items.forEach((raw) => {
+        const { label, value } = splitLabelValue(raw);
+        const li = document.createElement("li");
+
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = canonicalMacroLabel(label, raw);
+
+        const valueSpan = document.createElement("span");
+        valueSpan.className = `term-row-value term-tone-${classifyTone(raw)}`;
+        valueSpan.textContent = (label ? value : raw).toUpperCase();
+
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
+        fragment.appendChild(li);
+      });
+
+      listEl.appendChild(fragment);
+    }
+
+    // Market Sentiment leads with a single DIRECTION readout (BULLISH /
+    // BEARISH / MIXED / NEUTRAL) computed over the full sentiment array,
+    // then lists the underlying sentiment lines below it as supporting
+    // detail — so the section reads as one clear state rather than a
+    // pile of paragraphs, without hiding the real Grok text it's based on.
+    function renderSentimentBlock(listEl, items) {
+      listEl.textContent = "";
+      const fragment = document.createDocumentFragment();
+
+      if (items.length) {
+        const direction = classifyDirection(items.join(" "));
+        const li = document.createElement("li");
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = "DIRECTION";
+        const valueSpan = document.createElement("span");
+        valueSpan.className = `term-row-value term-direction-value term-tone-${directionTone(direction)}`;
+        valueSpan.textContent = direction;
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
+        fragment.appendChild(li);
+      }
+
+      items.forEach((raw) => {
+        const { label, value } = splitLabelValue(raw);
+        const li = document.createElement("li");
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = label ? shortenLabel(label) : "—";
+        const valueSpan = document.createElement("span");
+        valueSpan.className = `term-row-value term-tone-${classifyTone(raw)}`;
+        valueSpan.textContent = (label ? value : raw).toUpperCase();
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
+        fragment.appendChild(li);
+      });
+
       listEl.appendChild(fragment);
     }
 
     function renderMacro(etfFlows, systemMacro) {
-      const combined = [...normalizeArray(etfFlows), ...normalizeArray(systemMacro)];
-      renderList(macroListEl, macroEmptyEl, combined);
+      const etf = normalizeArray(etfFlows);
+      const macro = normalizeArray(systemMacro);
+
+      macroEmptyEl.hidden = etf.length > 0 || macro.length > 0;
+      macroEtfSectionEl.hidden = etf.length === 0;
+      macroSystemSectionEl.hidden = macro.length === 0;
+
+      renderRows(macroEtfListEl, etf);
+      renderMacroPulse(macroSystemListEl, macro);
+    }
+
+    // "What Matters Now" is deliberately NOT a new synthesized insight — it
+    // literally reuses the first (most prominent) X-narrative entry and the
+    // first sentiment entry already present in grok_data.json, clearly
+    // labeled, plus an overall bias readout computed with the exact same
+    // word-matching classifyTone() used for the other rows above. No new
+    // facts/numbers are introduced.
+    function renderWhatNow(xNarratives, sentiment) {
+      const narratives = normalizeArray(xNarratives);
+      const tone = normalizeArray(sentiment);
+      const rows = [];
+
+      if (narratives.length) {
+        rows.push({ label: "TOP NARRATIVE", value: narratives[0], raw: narratives[0] });
+      }
+      if (tone.length) {
+        rows.push({ label: "TOP SIGNAL", value: tone[0], raw: tone[0] });
+      }
+      if (narratives.length || tone.length) {
+        const combined = [narratives[0], tone[0]].filter(Boolean).join(" ");
+        const bias = classifyTone(combined);
+        const biasLabel = bias === "up" ? "RISK-ON" : bias === "down" ? "RISK-OFF" : "MIXED / NEUTRAL";
+        rows.push({ label: "OVERALL BIAS", value: biasLabel, raw: bias === "up" ? "bullish" : bias === "down" ? "bearish" : "" });
+      }
+
+      whatNowSectionEl.hidden = rows.length === 0;
+      whatNowListEl.textContent = "";
+      const fragment = document.createDocumentFragment();
+      rows.forEach((row) => {
+        const li = document.createElement("li");
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = row.label;
+        const valueSpan = document.createElement("span");
+        valueSpan.className = `term-row-value term-tone-${classifyTone(row.raw)}`;
+        valueSpan.textContent = row.value.toUpperCase();
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
+        fragment.appendChild(li);
+      });
+      whatNowListEl.appendChild(fragment);
     }
 
     function renderSentiment(xNarratives, sentiment) {
-      const combined = [...normalizeArray(xNarratives), ...normalizeArray(sentiment)];
-      renderList(sentimentListEl, sentimentEmptyEl, combined);
+      const narratives = normalizeArray(xNarratives);
+      const tone = normalizeArray(sentiment);
+
+      sentimentEmptyEl.hidden = narratives.length > 0 || tone.length > 0;
+      sentimentNarrativeSectionEl.hidden = narratives.length === 0;
+      sentimentToneSectionEl.hidden = tone.length === 0;
+
+      renderNarrativeBreakdown(sentimentNarrativeListEl, narratives);
+      renderSentimentBlock(sentimentToneListEl, tone);
+      renderWhatNow(xNarratives, sentiment);
     }
 
     async function pollGrokData() {
@@ -1123,16 +1478,15 @@
   //
   // Data source: Kraken's v2 WebSocket "ticker" channel (the same exchange
   // already used for the BTC chart — no new API introduced). If Kraken
-  // does not carry a given pair (e.g. it may not list BNB/USD) or a
-  // subscription is rejected, that asset explicitly shows
-  // "DATA UNAVAILABLE" rather than any simulated/fake value. A price is
-  // only ever displayed after a real message for that exact symbol has
-  // been received.
+  // does not carry a given pair or a subscription is rejected, that asset
+  // explicitly shows "DATA UNAVAILABLE" rather than any simulated/fake
+  // value. A price is only ever displayed after a real message for that
+  // exact symbol has been received.
   //
   // The bottom ticker strip mirrors this same data (no third WebSocket):
   // renderAsset() updates both the market-tape cell and the matching
-  // ticker-strip entry in one place. Unavailable assets (e.g. BNB) are
-  // simply omitted from the scrolling strip.
+  // ticker-strip entry in one place. Unavailable assets are simply
+  // omitted from the scrolling strip.
 
   (function () {
     const STREAM_URL = "wss://ws.kraken.com/v2";
@@ -1141,7 +1495,6 @@
       { symbol: "ETH/USD", ticker: "ETH" },
       { symbol: "SOL/USD", ticker: "SOL" },
       { symbol: "XRP/USD", ticker: "XRP" },
-      { symbol: "BNB/USD", ticker: "BNB" },
     ];
     const RECONNECT_BASE_DELAY_MS = 1000;
     const RECONNECT_MAX_DELAY_MS = 30000;
@@ -1158,9 +1511,19 @@
 
     function priceEl(ticker) { return document.getElementById(`mb-price-${ticker}`); }
     function changeEl(ticker) { return document.getElementById(`mb-change-${ticker}`); }
+    function cellEl(ticker) { return document.getElementById(`mb-cell-${ticker}`); }
+
+    const flashTimers = {};
+    function flashCell(ticker) {
+      const el = cellEl(ticker);
+      if (!el) return;
+      el.classList.add("mb-flash");
+      if (flashTimers[ticker]) clearTimeout(flashTimers[ticker]);
+      flashTimers[ticker] = setTimeout(() => el.classList.remove("mb-flash"), 400);
+    }
 
     function renderTickerStrip() {
-      const order = ["BTC", "ETH", "SOL", "XRP", "BNB"];
+      const order = ["BTC", "ETH", "SOL", "XRP"];
       const parts = [];
       order.forEach((ticker) => {
         const state = tickerState[ticker];
@@ -1254,6 +1617,7 @@
       }
 
       tickerState[ticker] = { last, changePct };
+      flashCell(ticker);
       renderTickerStrip();
     }
 
