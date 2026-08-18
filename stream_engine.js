@@ -188,37 +188,6 @@ function startLocalServer(rootDir) {
   });
 }
 
-// TEMPORARY - one-off debug endpoint to grab a live snapshot of the
-// broadcast frame on request, then removed again once used. Only binds a
-// public port if Railway has actually attached a domain (PORT env var set);
-// otherwise stays inert.
-function startDebugFrameServer(getFrame) {
-  const portEnv = process.env.PORT;
-  if (!portEnv) return null;
-
-  const server = http.createServer((req, res) => {
-    if (req.url !== "/debug/last-frame.jpg") {
-      res.writeHead(404);
-      res.end();
-      return;
-    }
-    const frame = getFrame();
-    if (!frame) {
-      res.writeHead(503);
-      res.end("No frame captured yet");
-      return;
-    }
-    res.writeHead(200, { "Content-Type": "image/jpeg" });
-    res.end(frame);
-  });
-
-  server.listen(Number(portEnv), "0.0.0.0", () => {
-    console.log(`[VIDEO_ENGINE] DEBUG frame server listening on 0.0.0.0:${portEnv}`);
-  });
-
-  return server;
-}
-
 function resolveOutputTarget(localOutputPath) {
   if (YOUTUBE_LIVE_URL) {
     return { destination: YOUTUBE_LIVE_URL, mode: "rtmp" };
@@ -279,13 +248,10 @@ export class VideoEngine {
     this.latestFrameBuffer = null;
     this.freshFrameCount = 0;
     this.statsTimer = null;
-    this.debugServer = null;
   }
 
   async run() {
     console.log("[VIDEO_ENGINE] Starting");
-
-    this.debugServer = startDebugFrameServer(() => this.latestFrameBuffer);
 
     try {
       const { server, port } = await startLocalServer(this.rootDir);
@@ -558,10 +524,6 @@ export class VideoEngine {
 
     if (this.server) {
       await new Promise((resolve) => this.server.close(resolve));
-    }
-
-    if (this.debugServer) {
-      await new Promise((resolve) => this.debugServer.close(resolve));
     }
 
     console.log("[VIDEO_ENGINE] Shutdown complete");
