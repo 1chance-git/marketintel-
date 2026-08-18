@@ -149,24 +149,30 @@
   .mb-cell {
     flex: 1;
     display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: 3px;
-    padding: 5px 14px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 14px;
     border-right: 1px solid #1a1a1a;
     min-width: 0;
     line-height: 1.1;
+    transition: background-color 300ms ease-out;
   }
 
   .mb-cell:last-child {
     border-right: none;
   }
 
+  .mb-cell.mb-flash {
+    background-color: #0a1a0a;
+  }
+
   .mb-row-top {
+    flex: 0 0 auto;
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
+    gap: 6px;
   }
 
   .mb-ticker {
@@ -174,23 +180,28 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     color: #7a7a7a;
+    white-space: nowrap;
   }
 
   .mb-price {
-    font-size: 15px;
+    flex: 1 1 auto;
+    font-size: 14px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     color: #e8e8e8;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    text-align: right;
   }
 
   .mb-change {
+    flex: 0 0 auto;
     font-size: 10.5px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     text-align: right;
+    min-width: 46px;
   }
 
   .mb-change.mb-up { color: #00ff00; }
@@ -436,18 +447,18 @@
     justify-content: flex-start;
     text-align: left;
     overflow-y: auto;
-    gap: 10px;
-    padding: 8px 12px;
+    gap: 6px;
+    padding: 6px 12px;
   }
 
   .term-section-label {
-    font-size: 9px;
+    font-size: 8.5px;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #5a5a5a;
-    padding-bottom: 3px;
-    margin-bottom: 2px;
+    padding-bottom: 2px;
+    margin-bottom: 1px;
     border-bottom: 1px solid #1a1a1a;
   }
 
@@ -463,10 +474,10 @@
     display: flex;
     align-items: baseline;
     gap: 10px;
-    padding: 3px 0;
+    padding: 2px 0;
     border-bottom: 1px solid #141414;
-    font-size: 11px;
-    line-height: 1.3;
+    font-size: 10.5px;
+    line-height: 1.25;
   }
 
   .term-rows li:last-child,
@@ -491,7 +502,7 @@
     letter-spacing: 0.01em;
     overflow: hidden;
     display: -webkit-box;
-    -webkit-line-clamp: 2;
+    -webkit-line-clamp: 1;
     -webkit-box-orient: vertical;
     word-break: break-word;
   }
@@ -604,40 +615,40 @@
   </div>
 
   <div id="market-board">
-    <div class="mb-cell" data-symbol="BTC/USD">
+    <div class="mb-cell" data-symbol="BTC/USD" id="mb-cell-BTC">
       <div class="mb-row-top">
-        <span class="mb-ticker">BTC</span>
-        <span class="mb-change mb-unavailable" id="mb-change-BTC">--</span>
+        <span class="mb-ticker">BTC/USD</span>
       </div>
       <span class="mb-price" id="mb-price-BTC">DATA UNAVAILABLE</span>
+      <span class="mb-change mb-unavailable" id="mb-change-BTC">--</span>
     </div>
-    <div class="mb-cell" data-symbol="ETH/USD">
+    <div class="mb-cell" data-symbol="ETH/USD" id="mb-cell-ETH">
       <div class="mb-row-top">
-        <span class="mb-ticker">ETH</span>
-        <span class="mb-change mb-unavailable" id="mb-change-ETH">--</span>
+        <span class="mb-ticker">ETH/USD</span>
       </div>
       <span class="mb-price" id="mb-price-ETH">DATA UNAVAILABLE</span>
+      <span class="mb-change mb-unavailable" id="mb-change-ETH">--</span>
     </div>
-    <div class="mb-cell" data-symbol="SOL/USD">
+    <div class="mb-cell" data-symbol="SOL/USD" id="mb-cell-SOL">
       <div class="mb-row-top">
-        <span class="mb-ticker">SOL</span>
-        <span class="mb-change mb-unavailable" id="mb-change-SOL">--</span>
+        <span class="mb-ticker">SOL/USD</span>
       </div>
       <span class="mb-price" id="mb-price-SOL">DATA UNAVAILABLE</span>
+      <span class="mb-change mb-unavailable" id="mb-change-SOL">--</span>
     </div>
-    <div class="mb-cell" data-symbol="XRP/USD">
+    <div class="mb-cell" data-symbol="XRP/USD" id="mb-cell-XRP">
       <div class="mb-row-top">
-        <span class="mb-ticker">XRP</span>
-        <span class="mb-change mb-unavailable" id="mb-change-XRP">--</span>
+        <span class="mb-ticker">XRP/USD</span>
       </div>
       <span class="mb-price" id="mb-price-XRP">DATA UNAVAILABLE</span>
+      <span class="mb-change mb-unavailable" id="mb-change-XRP">--</span>
     </div>
-    <div class="mb-cell" data-symbol="BNB/USD">
+    <div class="mb-cell" data-symbol="BNB/USD" id="mb-cell-BNB">
       <div class="mb-row-top">
-        <span class="mb-ticker">BNB</span>
-        <span class="mb-change mb-unavailable" id="mb-change-BNB">--</span>
+        <span class="mb-ticker">BNB/USD</span>
       </div>
       <span class="mb-price" id="mb-price-BNB">DATA UNAVAILABLE</span>
+      <span class="mb-change mb-unavailable" id="mb-change-BNB">--</span>
     </div>
   </div>
 
@@ -694,8 +705,12 @@
             <ol class="term-numbered" id="sentiment-narrative-list"></ol>
           </div>
           <div class="term-section" id="sentiment-tone-section" hidden>
-            <div class="term-section-label">Sentiment</div>
+            <div class="term-section-label">Market Sentiment</div>
             <ul class="term-rows" id="sentiment-tone-list"></ul>
+          </div>
+          <div class="term-section" id="whatnow-section" hidden>
+            <div class="term-section-label">What Matters Now</div>
+            <ul class="term-rows" id="whatnow-list"></ul>
           </div>
         </div>
       </div>
@@ -1112,6 +1127,8 @@
     const sentimentNarrativeListEl = document.getElementById("sentiment-narrative-list");
     const sentimentToneSectionEl = document.getElementById("sentiment-tone-section");
     const sentimentToneListEl = document.getElementById("sentiment-tone-list");
+    const whatNowSectionEl = document.getElementById("whatnow-section");
+    const whatNowListEl = document.getElementById("whatnow-list");
     const macroUpdatedEl = document.getElementById("macro-updated");
     const sentimentUpdatedEl = document.getElementById("sentiment-updated");
 
@@ -1251,6 +1268,48 @@
       renderRows(macroSystemListEl, macro);
     }
 
+    // "What Matters Now" is deliberately NOT a new synthesized insight — it
+    // literally reuses the first (most prominent) X-narrative entry and the
+    // first sentiment entry already present in grok_data.json, clearly
+    // labeled, plus an overall bias readout computed with the exact same
+    // word-matching classifyTone() used for the other rows above. No new
+    // facts/numbers are introduced.
+    function renderWhatNow(xNarratives, sentiment) {
+      const narratives = normalizeArray(xNarratives);
+      const tone = normalizeArray(sentiment);
+      const rows = [];
+
+      if (narratives.length) {
+        rows.push({ label: "TOP NARRATIVE", value: narratives[0], raw: narratives[0] });
+      }
+      if (tone.length) {
+        rows.push({ label: "TOP SIGNAL", value: tone[0], raw: tone[0] });
+      }
+      if (narratives.length || tone.length) {
+        const combined = [narratives[0], tone[0]].filter(Boolean).join(" ");
+        const bias = classifyTone(combined);
+        const biasLabel = bias === "up" ? "RISK-ON" : bias === "down" ? "RISK-OFF" : "MIXED / NEUTRAL";
+        rows.push({ label: "OVERALL BIAS", value: biasLabel, raw: bias === "up" ? "bullish" : bias === "down" ? "bearish" : "" });
+      }
+
+      whatNowSectionEl.hidden = rows.length === 0;
+      whatNowListEl.textContent = "";
+      const fragment = document.createDocumentFragment();
+      rows.forEach((row) => {
+        const li = document.createElement("li");
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = row.label;
+        const valueSpan = document.createElement("span");
+        valueSpan.className = `term-row-value term-tone-${classifyTone(row.raw)}`;
+        valueSpan.textContent = row.value.toUpperCase();
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
+        fragment.appendChild(li);
+      });
+      whatNowListEl.appendChild(fragment);
+    }
+
     function renderSentiment(xNarratives, sentiment) {
       const narratives = normalizeArray(xNarratives);
       const tone = normalizeArray(sentiment);
@@ -1261,6 +1320,7 @@
 
       renderNumbered(sentimentNarrativeListEl, narratives);
       renderRows(sentimentToneListEl, tone);
+      renderWhatNow(xNarratives, sentiment);
     }
 
     async function pollGrokData() {
@@ -1348,6 +1408,16 @@
 
     function priceEl(ticker) { return document.getElementById(`mb-price-${ticker}`); }
     function changeEl(ticker) { return document.getElementById(`mb-change-${ticker}`); }
+    function cellEl(ticker) { return document.getElementById(`mb-cell-${ticker}`); }
+
+    const flashTimers = {};
+    function flashCell(ticker) {
+      const el = cellEl(ticker);
+      if (!el) return;
+      el.classList.add("mb-flash");
+      if (flashTimers[ticker]) clearTimeout(flashTimers[ticker]);
+      flashTimers[ticker] = setTimeout(() => el.classList.remove("mb-flash"), 400);
+    }
 
     function renderTickerStrip() {
       const order = ["BTC", "ETH", "SOL", "XRP", "BNB"];
@@ -1444,6 +1514,7 @@
       }
 
       tickerState[ticker] = { last, changePct };
+      flashCell(ticker);
       renderTickerStrip();
     }
 
