@@ -144,6 +144,16 @@ const FRAME_INTERVAL_MS = 1000 / CAPTURE_FPS;
 // ---------------------------------------------------------------------------
 const YOUTUBE_LIVE_URL = process.env.YOUTUBE_LIVE_URL || null;
 
+// Structural-only diagnostic - never logs the value itself, just enough
+// shape information (present? how long? does it look like a real RTMP
+// URL?) to debug a misconfigured variable without ever exposing the key.
+console.log(
+  `[VIDEO_ENGINE] YOUTUBE_LIVE_URL configured=${!!YOUTUBE_LIVE_URL} ` +
+    `length=${YOUTUBE_LIVE_URL ? YOUTUBE_LIVE_URL.length : 0} ` +
+    `startsWithRtmp=${YOUTUBE_LIVE_URL ? YOUTUBE_LIVE_URL.startsWith("rtmp://") : false} ` +
+    `hasWhitespace=${YOUTUBE_LIVE_URL ? /\s/.test(YOUTUBE_LIVE_URL) : false}`
+);
+
 function startLocalServer(rootDir) {
   const mimeTypes = {
     ".html": "text/html; charset=utf-8",
