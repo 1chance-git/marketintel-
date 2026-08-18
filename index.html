@@ -462,15 +462,13 @@
     border-bottom: 1px solid #1a1a1a;
   }
 
-  .term-rows,
-  .term-numbered {
+  .term-rows {
     list-style: none;
     margin: 0;
     padding: 0;
   }
 
-  .term-rows li,
-  .term-numbered li {
+  .term-rows li {
     display: flex;
     align-items: baseline;
     gap: 10px;
@@ -480,8 +478,7 @@
     line-height: 1.25;
   }
 
-  .term-rows li:last-child,
-  .term-numbered li:last-child {
+  .term-rows li:last-child {
     border-bottom: none;
   }
 
@@ -510,23 +507,27 @@
   .term-row-value.term-tone-up { color: #00ff00; }
   .term-row-value.term-tone-down { color: #ff3b30; }
 
-  .term-num {
-    flex: 0 0 auto;
-    color: #3a3a3a;
+  /* Sentiment panel's single DIRECTION readout — bolder than a normal row
+     value but still row-height, not a giant headline. */
+  .term-direction-value {
     font-weight: 700;
-    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    letter-spacing: 0.04em;
   }
 
-  .term-headline {
-    flex: 1 1 auto;
-    color: #cfcfcf;
-    letter-spacing: 0.01em;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    word-break: break-word;
-    text-transform: uppercase;
+  /* "What Matters Now" reads as one highlighted broadcast block rather
+     than another plain row-section — a muted amber accent (reusing the
+     existing connecting-status amber, not a new color), not a gradient
+     or rounded card. */
+  .term-section.term-highlight {
+    border: 1px solid #262210;
+    background: #0b0a06;
+    padding: 5px 8px;
+  }
+
+  .term-section.term-highlight .term-section-label {
+    color: #d4b34a;
+    border-bottom-color: #262210;
   }
 
   /* ---------- 5. BOTTOM TICKER ---------- */
@@ -676,7 +677,7 @@
         <div class="card-body term-body" id="macro-body">
           <div class="empty-state" id="macro-empty-state">Waiting for macro intelligence...</div>
           <div class="term-section" id="macro-etf-section" hidden>
-            <div class="term-section-label">Institutional Flow</div>
+            <div class="term-section-label">ETF / Institutional Flow</div>
             <ul class="term-rows" id="macro-etf-list"></ul>
           </div>
           <div class="term-section" id="macro-system-section" hidden>
@@ -695,13 +696,13 @@
           <div class="empty-state" id="sentiment-empty-state">Waiting for sentiment intelligence...</div>
           <div class="term-section" id="sentiment-narrative-section" hidden>
             <div class="term-section-label">X Narrative Pulse</div>
-            <ol class="term-numbered" id="sentiment-narrative-list"></ol>
+            <ul class="term-rows" id="sentiment-narrative-list"></ul>
           </div>
           <div class="term-section" id="sentiment-tone-section" hidden>
             <div class="term-section-label">Market Sentiment</div>
             <ul class="term-rows" id="sentiment-tone-list"></ul>
           </div>
-          <div class="term-section" id="whatnow-section" hidden>
+          <div class="term-section term-highlight" id="whatnow-section" hidden>
             <div class="term-section-label">What Matters Now</div>
             <ul class="term-rows" id="whatnow-list"></ul>
           </div>
@@ -1201,6 +1202,43 @@
       return "flat";
     }
 
+    // Same word lists/approach as classifyTone(), but exposes the
+    // "both directions present" case as its own MIXED state rather than
+    // collapsing it into the same bucket as "no signal words at all".
+    function classifyDirection(text) {
+      const lower = text.toLowerCase();
+      const hasDown = TONE_DOWN_WORDS.some((w) => lower.includes(w));
+      const hasUp = TONE_UP_WORDS.some((w) => lower.includes(w));
+      if (hasUp && hasDown) return "MIXED";
+      if (hasUp) return "BULLISH";
+      if (hasDown) return "BEARISH";
+      return "NEUTRAL";
+    }
+
+    function directionTone(direction) {
+      if (direction === "BULLISH") return "up";
+      if (direction === "BEARISH") return "down";
+      return "flat";
+    }
+
+    // Maps a macro row's derived label onto one of the 4 canonical
+    // broadcast indicator names when the underlying text is clearly about
+    // that topic. Falls back to the generic shortened label for anything
+    // else, so future/unexpected macro lines still render sensibly.
+    const MACRO_LABEL_MAP = [
+      { pattern: /FEAR|GREED/, label: "FEAR/GREED" },
+      { pattern: /REGULAT/, label: "REGULATION" },
+      { pattern: /LIQUID/, label: "LIQUIDITY" },
+      { pattern: /VOLUME/, label: "VOLUME" },
+    ];
+
+    function canonicalMacroLabel(label, raw) {
+      const probe = (label || raw).toUpperCase();
+      const match = MACRO_LABEL_MAP.find((m) => m.pattern.test(probe));
+      if (match) return match.label;
+      return label ? shortenLabel(label) : "—";
+    }
+
     function renderRows(listEl, items) {
       listEl.textContent = "";
       const fragment = document.createDocumentFragment();
@@ -1225,23 +1263,98 @@
       listEl.appendChild(fragment);
     }
 
-    function renderNumbered(listEl, items) {
+    // Splits the existing x_narratives array across 3 fixed broadcast
+    // slots by position — item 0 is the strongest/first-listed narrative
+    // Grok reported, item 1 the next, item 2 whatever came after. This is
+    // purely a labeling/order transformation of real array entries, never
+    // invented text. A row is only shown if that array index exists.
+    const NARRATIVE_SLOT_LABELS = ["TOP NARRATIVE", "EMERGING THEME", "MARKET TALK"];
+
+    function renderNarrativeBreakdown(listEl, items) {
       listEl.textContent = "";
       const fragment = document.createDocumentFragment();
 
-      items.forEach((raw, i) => {
+      items.slice(0, NARRATIVE_SLOT_LABELS.length).forEach((raw, i) => {
         const li = document.createElement("li");
 
-        const num = document.createElement("span");
-        num.className = "term-num";
-        num.textContent = String(i + 1).padStart(2, "0");
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = NARRATIVE_SLOT_LABELS[i];
 
-        const headline = document.createElement("span");
-        headline.className = "term-headline";
-        headline.textContent = raw; // textContent only — never innerHTML — to prevent HTML injection.
+        const valueSpan = document.createElement("span");
+        valueSpan.className = "term-row-value";
+        valueSpan.textContent = raw.toUpperCase(); // textContent only — never innerHTML — to prevent HTML injection.
 
-        li.appendChild(num);
-        li.appendChild(headline);
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
+        fragment.appendChild(li);
+      });
+
+      listEl.appendChild(fragment);
+    }
+
+    // Macro Pulse rows use canonical broadcast indicator names
+    // (FEAR/GREED, REGULATION, LIQUIDITY, VOLUME) instead of the raw
+    // sentence label, while the value stays exactly the derived text —
+    // no numeric value is invented, only the label is normalized.
+    function renderMacroPulse(listEl, items) {
+      listEl.textContent = "";
+      const fragment = document.createDocumentFragment();
+
+      items.forEach((raw) => {
+        const { label, value } = splitLabelValue(raw);
+        const li = document.createElement("li");
+
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = canonicalMacroLabel(label, raw);
+
+        const valueSpan = document.createElement("span");
+        valueSpan.className = `term-row-value term-tone-${classifyTone(raw)}`;
+        valueSpan.textContent = (label ? value : raw).toUpperCase();
+
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
+        fragment.appendChild(li);
+      });
+
+      listEl.appendChild(fragment);
+    }
+
+    // Market Sentiment leads with a single DIRECTION readout (BULLISH /
+    // BEARISH / MIXED / NEUTRAL) computed over the full sentiment array,
+    // then lists the underlying sentiment lines below it as supporting
+    // detail — so the section reads as one clear state rather than a
+    // pile of paragraphs, without hiding the real Grok text it's based on.
+    function renderSentimentBlock(listEl, items) {
+      listEl.textContent = "";
+      const fragment = document.createDocumentFragment();
+
+      if (items.length) {
+        const direction = classifyDirection(items.join(" "));
+        const li = document.createElement("li");
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = "DIRECTION";
+        const valueSpan = document.createElement("span");
+        valueSpan.className = `term-row-value term-direction-value term-tone-${directionTone(direction)}`;
+        valueSpan.textContent = direction;
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
+        fragment.appendChild(li);
+      }
+
+      items.forEach((raw) => {
+        const { label, value } = splitLabelValue(raw);
+        const li = document.createElement("li");
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "term-row-label";
+        labelSpan.textContent = label ? shortenLabel(label) : "—";
+        const valueSpan = document.createElement("span");
+        valueSpan.className = `term-row-value term-tone-${classifyTone(raw)}`;
+        valueSpan.textContent = (label ? value : raw).toUpperCase();
+        li.appendChild(labelSpan);
+        li.appendChild(valueSpan);
         fragment.appendChild(li);
       });
 
@@ -1257,7 +1370,7 @@
       macroSystemSectionEl.hidden = macro.length === 0;
 
       renderRows(macroEtfListEl, etf);
-      renderRows(macroSystemListEl, macro);
+      renderMacroPulse(macroSystemListEl, macro);
     }
 
     // "What Matters Now" is deliberately NOT a new synthesized insight — it
@@ -1310,8 +1423,8 @@
       sentimentNarrativeSectionEl.hidden = narratives.length === 0;
       sentimentToneSectionEl.hidden = tone.length === 0;
 
-      renderNumbered(sentimentNarrativeListEl, narratives);
-      renderRows(sentimentToneListEl, tone);
+      renderNarrativeBreakdown(sentimentNarrativeListEl, narratives);
+      renderSentimentBlock(sentimentToneListEl, tone);
       renderWhatNow(xNarratives, sentiment);
     }
 
