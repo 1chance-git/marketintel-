@@ -297,10 +297,65 @@
     color: #00ff00;
   }
 
+  /* Small TREND/VOLUME context badges, derived only from the existing
+     Kraken OHLCV candle data already held in candleData[ticker] - no new
+     data source. Plain colored text (no pill/rounded background) to
+     match the rest of the terminal's flat, institutional look. */
+  #chart-badges {
+    flex: 0 0 16px;
+    height: 16px;
+    padding: 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    color: #4a4a4a;
+    border-bottom: 1px solid #1a1a1a;
+  }
+
+  .chart-badge-label {
+    color: #4a4a4a;
+    margin-right: 4px;
+  }
+
+  .chart-badge-value {
+    font-weight: 700;
+    color: #9a9a9a;
+  }
+
+  .chart-badge-value.badge-up { color: #00ff00; }
+  .chart-badge-value.badge-down { color: #ff3b30; }
+  .chart-badge-value.badge-notable { color: #e8e8e8; }
+
   #chart-area {
     flex: 1;
     position: relative;
     min-height: 0;
+  }
+
+  /* Compact color-swatch legend for the EMA/VWAP overlay lines - overlaid
+     on the chart canvas itself (top-left corner) rather than taking its
+     own layout row, so it costs zero additional vertical space. */
+  #chart-legend {
+    position: absolute;
+    top: 6px;
+    left: 14px;
+    z-index: 2;
+    display: flex;
+    gap: 10px;
+    font-size: 8.5px;
+    letter-spacing: 0.03em;
+    color: #6a6a6a;
+    pointer-events: none;
+  }
+
+  .legend-swatch {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 4px;
+    vertical-align: middle;
   }
 
   #chart-container {
@@ -390,6 +445,17 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #cfcfcf;
+  }
+
+  /* Small monochrome section icons - grayscale+dimmed via filter so the
+     glyphs read as subdued institutional iconography rather than
+     full-color retail/emoji-heavy decoration. */
+  .title-icon {
+    display: inline-block;
+    margin-right: 5px;
+    font-size: 10px;
+    filter: grayscale(1);
+    opacity: 0.65;
   }
 
   .card-updated {
@@ -737,8 +803,17 @@
         <span class="rot-dot" data-ticker="SOL">&#9675; SOL/USD</span>
         <span class="rot-dot" data-ticker="XRP">&#9675; XRP/USD</span>
       </div>
+      <div id="chart-badges">
+        <span class="chart-badge"><span class="chart-badge-label">TREND</span><span class="chart-badge-value" id="trend-value">—</span></span>
+        <span class="chart-badge"><span class="chart-badge-label">VOLUME</span><span class="chart-badge-value" id="volume-value">—</span></span>
+      </div>
       <div id="chart-area">
         <div id="chart-container"></div>
+        <div id="chart-legend">
+          <span class="legend-item"><span class="legend-swatch" style="background:#4a90d9"></span>EMA20</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:#d4914a"></span>EMA50</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:#8a5cd4"></span>VWAP</span>
+        </div>
         <div id="chart-fallback">Waiting for live BTC/USD feed...</div>
         <div id="chart-unavailable">MARKET DATA TEMPORARILY UNAVAILABLE</div>
       </div>
@@ -747,7 +822,10 @@
     <div id="intel-pane">
       <div class="card" id="card-rotator">
         <div class="card-title">
-          <span class="card-title-label" id="rotator-title">ETF / Institutional Flow</span>
+          <span class="card-title-label">
+            <span class="title-icon" id="rotator-icon" aria-hidden="true">&#127974;</span>
+            <span id="rotator-title-text">ETF / Institutional Flow</span>
+          </span>
           <span class="card-updated" id="rotator-updated"></span>
         </div>
         <div class="card-body term-body rotator-body" id="rotator-body">
@@ -776,7 +854,7 @@
 
       <div class="card" id="card-description">
         <div class="card-title">
-          <span class="card-title-label">Market Description</span>
+          <span class="card-title-label"><span class="title-icon" aria-hidden="true">&#128221;</span>Market Description</span>
           <span class="card-updated" id="description-updated"></span>
         </div>
         <div class="card-body desc-body" id="description-body">
@@ -840,6 +918,8 @@
     const sessionChangeEl = document.getElementById("session-change");
     const headerLabelEl = document.getElementById("chart-header-label");
     const rotDotEls = Array.from(document.querySelectorAll("#rotation-indicator .rot-dot"));
+    const trendValueEl = document.getElementById("trend-value");
+    const volumeValueEl = document.getElementById("volume-value");
 
     // Per-asset state: candles, session-open (for %-change), last price,
     // and whether data has ever been confirmed available/unavailable.
@@ -896,6 +976,50 @@
       wickUpColor: "#00ff00",
       wickDownColor: "#ff3b30",
     });
+
+    // Market-context overlays - all derived purely from the same Kraken
+    // OHLCV candle data already held in candleData[ticker] (Kraken's v2
+    // ohlc payload includes volume/vwap per candle alongside OHLC; see
+    // handleCandle() below). One reusable series per indicator, just
+    // like candleSeries itself: setData() swaps whichever ticker's
+    // derived values are shown, no per-ticker series objects needed.
+    const ema20Series = chart.addLineSeries({
+      color: "#4a90d9",
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    const ema50Series = chart.addLineSeries({
+      color: "#d4914a",
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    const vwapSeries = chart.addLineSeries({
+      color: "#8a5cd4",
+      lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dotted,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    const volumeSeries = chart.addHistogramSeries({
+      color: "#2a2a2a",
+      priceFormat: { type: "volume" },
+      priceScaleId: "volume",
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    // Confine the volume histogram to a thin strip at the bottom of the
+    // chart pane (like a real terminal) rather than letting it compete
+    // with the candles for vertical space.
+    chart.priceScale("volume").applyOptions({
+      scaleMargins: { top: 0.82, bottom: 0 },
+    });
+
+    let currentPriceLine = null;
 
     function resizeChart() {
       chart.resize(containerEl.clientWidth, containerEl.clientHeight);
@@ -964,6 +1088,160 @@
       }
     }
 
+    // Simple exponential moving average over each candle's close, derived
+    // purely from candleData[ticker] - no new data source. Standard EMA
+    // seeded with the first close (common when a full separate SMA
+    // warm-up period isn't tracked), which converges to the same steady-
+    // state values after a handful of candles.
+    function computeEMA(candles, period) {
+      if (!candles.length) return [];
+      const k = 2 / (period + 1);
+      const out = new Array(candles.length);
+      let prev = candles[0].close;
+      out[0] = { time: candles[0].time, value: prev };
+      for (let i = 1; i < candles.length; i++) {
+        const value = candles[i].close * k + prev * (1 - k);
+        out[i] = { time: candles[i].time, value };
+        prev = value;
+      }
+      return out;
+    }
+
+    // Prefers Kraken's own per-candle vwap field (already correctly
+    // volume-weighted by the exchange, from the same "ohlc" payload as
+    // the candle itself - see handleCandle()). Falls back to a cumulative
+    // typical-price VWAP computed from our own OHLCV fields only when
+    // Kraken's vwap is missing, so this never depends on anything beyond
+    // data already flowing through the existing pipeline.
+    function computeVWAP(candles) {
+      let cumulativePV = 0;
+      let cumulativeVolume = 0;
+      return candles.map((c) => {
+        if (Number.isFinite(c.vwap)) {
+          return { time: c.time, value: c.vwap };
+        }
+        const typical = (c.high + c.low + c.close) / 3;
+        const vol = Number.isFinite(c.volume) ? c.volume : 0;
+        cumulativePV += typical * vol;
+        cumulativeVolume += vol;
+        const value = cumulativeVolume > 0 ? cumulativePV / cumulativeVolume : typical;
+        return { time: c.time, value };
+      });
+    }
+
+    // BULLISH/BEARISH by EMA20 vs EMA50 relative position (the standard
+    // moving-average-crossover read), with a small dead zone around
+    // exact equality so float noise on a flat market doesn't flap the
+    // badge between states every tick.
+    function computeTrend(ema20, ema50) {
+      if (!ema20.length || !ema50.length) return "NEUTRAL";
+      const a = ema20[ema20.length - 1].value;
+      const b = ema50[ema50.length - 1].value;
+      if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return "NEUTRAL";
+      const diffPct = ((a - b) / b) * 100;
+      if (diffPct > 0.05) return "BULLISH";
+      if (diffPct < -0.05) return "BEARISH";
+      return "NEUTRAL";
+    }
+
+    // HIGH/NORMAL/LOW by comparing the latest candle's volume against the
+    // trailing average of up to the prior 20 candles - purely relative to
+    // this asset's own recent history, no external benchmark. Requires a
+    // handful of candles before it will call anything other than NORMAL,
+    // rather than guessing off too little data right after a rotation
+    // swap or fresh page load.
+    function computeVolumeLevel(candles) {
+      const vols = candles.map((c) => c.volume).filter((v) => Number.isFinite(v) && v >= 0);
+      if (vols.length < 5) return "NORMAL";
+      const latest = vols[vols.length - 1];
+      const priorWindow = vols.slice(0, -1).slice(-20);
+      const priorAvg = priorWindow.reduce((sum, v) => sum + v, 0) / priorWindow.length;
+      if (!Number.isFinite(priorAvg) || priorAvg === 0) return "NORMAL";
+      if (latest > priorAvg * 1.5) return "HIGH";
+      if (latest < priorAvg * 0.5) return "LOW";
+      return "NORMAL";
+    }
+
+    function setBadge(el, value, upWord, downWord) {
+      el.textContent = value;
+      el.classList.remove("badge-up", "badge-down");
+      if (value === upWord) el.classList.add("badge-up");
+      else if (value === downWord) el.classList.add("badge-down");
+    }
+
+    // Volume is a magnitude, not a direction — HIGH isn't "good" (green)
+    // and LOW isn't "bad" (red) the way BULLISH/BEARISH are, so this uses
+    // its own neutral-attention color (bright vs. dim) instead of
+    // reusing the trend badge's up/down green/red semantics.
+    function setVolumeBadge(el, value) {
+      el.textContent = value;
+      el.classList.remove("badge-notable");
+      if (value === "HIGH") el.classList.add("badge-notable");
+    }
+
+    // Recomputes and redraws every overlay indicator (EMA20/EMA50/VWAP/
+    // volume histogram/current-price line/TREND+VOLUME badges) for
+    // whichever ticker is passed in, from that ticker's own candleData -
+    // same "derive fresh from already-held data" pattern as the candle
+    // series itself. Callers gate this on ticker === renderedTicker (full
+    // swap) or ticker === activeTicker/renderedTicker (live tick) so
+    // indicators never draw for the wrong asset mid-fade.
+    function updateChartIndicators(candles) {
+      const ema20 = computeEMA(candles, 20);
+      const ema50 = computeEMA(candles, 50);
+      const vwap = computeVWAP(candles);
+      const volumeBars = candles
+        .filter((c) => Number.isFinite(c.volume))
+        .map((c) => ({
+          time: c.time,
+          value: c.volume,
+          color: c.close >= c.open ? "rgba(0, 255, 0, 0.35)" : "rgba(255, 59, 48, 0.35)",
+        }));
+
+      try {
+        ema20Series.setData(ema20);
+        ema50Series.setData(ema50);
+        vwapSeries.setData(vwap);
+        volumeSeries.setData(volumeBars);
+      } catch (err) {
+        // Same defense-in-depth as the candle series - never let a bad
+        // indicator update crash the render loop.
+        console.error("[CHART] indicator setData failed:", err);
+      }
+
+      const last = candles[candles.length - 1];
+      if (currentPriceLine) {
+        try {
+          candleSeries.removePriceLine(currentPriceLine);
+        } catch (err) {
+          // Ignore — line may already be gone if the series was rebuilt.
+        }
+        currentPriceLine = null;
+      }
+      if (last && Number.isFinite(last.close)) {
+        try {
+          currentPriceLine = candleSeries.createPriceLine({
+            price: last.close,
+            color: "rgba(255, 255, 255, 0.45)",
+            lineWidth: 1,
+            lineStyle: LightweightCharts.LineStyle.Dotted,
+            axisLabelVisible: true,
+            title: "",
+          });
+        } catch (err) {
+          console.error("[CHART] current-price line failed:", err);
+        }
+      }
+
+      if (candles.length) {
+        setBadge(trendValueEl, computeTrend(ema20, ema50), "BULLISH", "BEARISH");
+        setVolumeBadge(volumeValueEl, computeVolumeLevel(candles));
+      } else {
+        setBadge(trendValueEl, "—", "BULLISH", "BEARISH");
+        setVolumeBadge(volumeValueEl, "—");
+      }
+    }
+
     function renderRotationIndicator() {
       rotDotEls.forEach((el) => {
         const ticker = el.getAttribute("data-ticker");
@@ -987,6 +1265,9 @@
         fallbackEl.style.display = "none";
         unavailableEl.style.display = "flex";
         renderedTicker = ticker;
+        // Clear indicators/badges too — otherwise the previous asset's
+        // values would keep showing over an "unavailable" chart.
+        updateChartIndicators([]);
         return;
       }
 
@@ -1010,6 +1291,7 @@
         // never be allowed to crash the whole render loop.
         console.error("[CHART] candleSeries.setData failed:", err);
       }
+      updateChartIndicators(candles);
       renderedTicker = ticker;
       renderActiveHeader();
     }
@@ -1061,6 +1343,13 @@
         high: parseFloat(entry.high),
         low: parseFloat(entry.low),
         close: parseFloat(entry.close),
+        // Kraken's v2 "ohlc" payload includes volume/vwap alongside OHLC
+        // on the same message - no separate subscription/API needed.
+        // Left as NaN (via parseFloat of undefined) if absent; consumers
+        // (computeVWAP/computeVolumeLevel) already handle that via
+        // Number.isFinite() checks rather than assuming these exist.
+        volume: parseFloat(entry.volume),
+        vwap: parseFloat(entry.vwap),
       };
 
       if (!Number.isFinite(candle.time) || [candle.open, candle.high, candle.low, candle.close].some((v) => !Number.isFinite(v))) {
@@ -1127,6 +1416,7 @@
             console.error("[CHART] series rebuild also failed:", rebuildErr);
           }
         }
+        updateChartIndicators(series);
         fallbackEl.style.display = "none";
       }
       if (ticker === activeTicker) {
@@ -1649,17 +1939,21 @@
     // at once. This only toggles which already-rendered slide is visible
     // and swaps the title label; it never touches data fetching, the
     // Kraken WebSockets, or the chart above.
+    // Icons are small monochrome (grayscale-filtered, see .title-icon)
+    // glyphs identifying each rotating section — purely presentational,
+    // swapped alongside the title text on each rotation tick.
     const ROTATION_SLIDES = [
-      { slideId: "slide-etf", title: "ETF / Institutional Flow" },
-      { slideId: "slide-macro", title: "Macro Pulse" },
-      { slideId: "slide-narrative", title: "X Narrative Pulse" },
-      { slideId: "slide-sentiment", title: "Market Sentiment" },
-      { slideId: "slide-whatnow", title: "What Matters Now" },
+      { slideId: "slide-etf", title: "ETF / Institutional Flow", icon: "\u{1F3E6}" },
+      { slideId: "slide-macro", title: "Macro Pulse", icon: "\u{1F310}" },
+      { slideId: "slide-narrative", title: "X Narrative Pulse", icon: "\u{1F9E0}" },
+      { slideId: "slide-sentiment", title: "Market Sentiment", icon: "\u{1F4CA}" },
+      { slideId: "slide-whatnow", title: "What Matters Now", icon: "\u{26A1}" },
     ];
     const ROTATION_INTERVAL_MS = 10000;
     const ROTATION_FADE_MS = 200;
 
-    const rotatorTitleEl = document.getElementById("rotator-title");
+    const rotatorIconEl = document.getElementById("rotator-icon");
+    const rotatorTitleTextEl = document.getElementById("rotator-title-text");
     const rotatorBodyEl = document.getElementById("rotator-body");
     const rotationSlideEls = ROTATION_SLIDES.map((s) => document.getElementById(s.slideId));
 
@@ -1669,7 +1963,8 @@
       rotationSlideEls.forEach((el, i) => {
         el.hidden = i !== index;
       });
-      rotatorTitleEl.textContent = ROTATION_SLIDES[index].title;
+      rotatorIconEl.textContent = ROTATION_SLIDES[index].icon;
+      rotatorTitleTextEl.textContent = ROTATION_SLIDES[index].title;
     }
 
     function advanceRotator() {
