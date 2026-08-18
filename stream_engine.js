@@ -315,7 +315,22 @@ function spawnFfmpeg({ destination, mode }) {
     args.push("-readrate", "1");
   }
 
+  // FFmpeg logs "Thread message queue blocking; consider raising the
+  // thread_queue_size option (current value: 8)" on every run - the
+  // demuxer's default 8-frame internal buffer is too small for CDP
+  // screencast frames arriving in bursts (observed ~56-59fps arrival vs
+  // the fixed 30fps write rate), causing brief stalls that undershoot the
+  // real 30fps encode rate. That undershoot used to get masked because
+  // FFmpeg would just race ahead to catch up once the pipe unblocked -
+  // which is exactly the behavior -readrate above now prevents (by
+  // design, to stop overshooting real-time and triggering YouTube's
+  // "sending faster than realtime" error). With overshoot no longer
+  // absorbing any shortfall, an undersized queue could otherwise let a
+  // real encode-rate deficit compound into a growing live-stream delay
+  // over time instead of staying bounded. Raising the queue removes the
+  // stalls at the source.
   args.push(
+    "-thread_queue_size", "512",
     "-f", "image2pipe",
     "-vcodec", "mjpeg",
     "-framerate", String(CAPTURE_FPS),
