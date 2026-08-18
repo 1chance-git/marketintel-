@@ -150,17 +150,26 @@ const FRAME_INTERVAL_MS = 1000 / CAPTURE_FPS;
 // ---------------------------------------------------------------------------
 function resolveYoutubeLiveUrlSource() {
   const direct = process.env.YOUTUBE_LIVE_URL || null;
-  if (direct && direct.startsWith("rtmp://")) {
-    return { url: direct, source: "YOUTUBE_LIVE_URL" };
+  if (direct) {
+    if (direct.startsWith("rtmp://")) {
+      return { url: direct, source: "YOUTUBE_LIVE_URL" };
+    }
+    return { url: null, source: "none (YOUTUBE_LIVE_URL set but not rtmp://)" };
   }
 
   const streamUrl = process.env.Stream_URL;
   const streamKey = process.env.Stream_Key;
   if (streamUrl && streamKey) {
-    return { url: `${streamUrl.replace(/\/+$/, "")}/${streamKey}`, source: "Stream_URL+Stream_Key" };
+    if (streamUrl.startsWith("rtmp://")) {
+      return { url: `${streamUrl.replace(/\/+$/, "")}/${streamKey}`, source: "Stream_URL+Stream_Key" };
+    }
+    return { url: null, source: "none (Stream_URL set but not rtmp://)" };
+  }
+  if (streamUrl || streamKey) {
+    return { url: null, source: `none (only ${streamUrl ? "Stream_URL" : "Stream_Key"} set)` };
   }
 
-  return { url: null, source: "none" };
+  return { url: null, source: "none (nothing set)" };
 }
 
 const { url: YOUTUBE_LIVE_URL, source: YOUTUBE_LIVE_URL_SOURCE } = resolveYoutubeLiveUrlSource();
