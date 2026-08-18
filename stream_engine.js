@@ -148,8 +148,32 @@ const FRAME_INTERVAL_MS = 1000 / CAPTURE_FPS;
 // directly as YOUTUBE_LIVE_URL, fall back to building it from separate
 // Stream_URL + Stream_Key variables (also never hardcoded/committed here).
 // ---------------------------------------------------------------------------
+// Structural-only shape report for a raw candidate value - reports length,
+// whether it starts with "rtmp://" (safe to check/log: that's the fixed,
+// non-secret protocol prefix, never the key), whether it contains any
+// "://" scheme at all (catches e.g. an http:// URL pasted by mistake),
+// and whether it has leading/trailing/embedded whitespace (a common
+// copy-paste mistake) - never the value itself.
+function describeShape(value) {
+  if (!value) return "unset";
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value);
+  return (
+    `length=${value.length} startsWithRtmp=${value.startsWith("rtmp://")} ` +
+    `hasAnyScheme=${hasScheme} ` +
+    `hasLeadingOrTrailingWhitespace=${value !== value.trim()} ` +
+    `hasEmbeddedWhitespace=${/\s/.test(value.trim())}`
+  );
+}
+
 function resolveYoutubeLiveUrlSource() {
   const direct = process.env.YOUTUBE_LIVE_URL || null;
+  const streamUrl = process.env.Stream_URL || null;
+  const streamKey = process.env.Stream_Key || null;
+
+  console.log(`[VIDEO_ENGINE] YOUTUBE_LIVE_URL shape: ${describeShape(direct)}`);
+  console.log(`[VIDEO_ENGINE] Stream_URL shape: ${describeShape(streamUrl)}`);
+  console.log(`[VIDEO_ENGINE] Stream_Key shape: ${describeShape(streamKey)}`);
+
   if (direct) {
     if (direct.startsWith("rtmp://")) {
       return { url: direct, source: "YOUTUBE_LIVE_URL" };
@@ -157,8 +181,6 @@ function resolveYoutubeLiveUrlSource() {
     return { url: null, source: "none (YOUTUBE_LIVE_URL set but not rtmp://)" };
   }
 
-  const streamUrl = process.env.Stream_URL;
-  const streamKey = process.env.Stream_Key;
   if (streamUrl && streamKey) {
     if (streamUrl.startsWith("rtmp://")) {
       return { url: `${streamUrl.replace(/\/+$/, "")}/${streamKey}`, source: "Stream_URL+Stream_Key" };
@@ -174,17 +196,7 @@ function resolveYoutubeLiveUrlSource() {
 
 const { url: YOUTUBE_LIVE_URL, source: YOUTUBE_LIVE_URL_SOURCE } = resolveYoutubeLiveUrlSource();
 
-// Structural-only diagnostic - never logs the value itself, just enough
-// shape information (present? how long? does it look like a real RTMP
-// URL? which variable(s) it came from) to debug a misconfigured variable
-// without ever exposing the key.
-console.log(
-  `[VIDEO_ENGINE] YOUTUBE_LIVE_URL resolved: source=${YOUTUBE_LIVE_URL_SOURCE} ` +
-    `configured=${!!YOUTUBE_LIVE_URL} ` +
-    `length=${YOUTUBE_LIVE_URL ? YOUTUBE_LIVE_URL.length : 0} ` +
-    `startsWithRtmp=${YOUTUBE_LIVE_URL ? YOUTUBE_LIVE_URL.startsWith("rtmp://") : false} ` +
-    `hasWhitespace=${YOUTUBE_LIVE_URL ? /\s/.test(YOUTUBE_LIVE_URL) : false}`
-);
+console.log(`[VIDEO_ENGINE] YOUTUBE_LIVE_URL resolved: source=${YOUTUBE_LIVE_URL_SOURCE} configured=${!!YOUTUBE_LIVE_URL}`);
 
 function startLocalServer(rootDir) {
   const mimeTypes = {
