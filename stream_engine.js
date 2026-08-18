@@ -444,7 +444,16 @@ export class VideoEngine {
       this.page.on("pageerror", (err) => {
         if (err.message === lastPageErrorMessage) {
           pageErrorRepeatCount += 1;
-          if (pageErrorRepeatCount % 20 === 0) {
+          if (pageErrorRepeatCount === 100) {
+            // index.html's chart code now self-heals (skips out-of-order
+            // candles, rebuilds the series via setData() if a single
+            // update() throws) so a repeat like this should be rare and
+            // should stop increasing once healed. Triple-digit repeats of
+            // the exact same error mean that self-heal isn't working for
+            // this particular failure - worth a loud one-time flag rather
+            // than silently counting forever.
+            console.error(`[VIDEO_ENGINE] ALERT: page error has now repeated ${pageErrorRepeatCount}x without recovering: ${err.message}`);
+          } else if (pageErrorRepeatCount % 20 === 0) {
             console.error(`[VIDEO_ENGINE] Page error (repeated ${pageErrorRepeatCount}x): ${err.message}`);
           }
           return;
