@@ -413,6 +413,7 @@ export class VideoEngine {
     // never logging this.outputTarget.destination directly.
     let stderrBuffer = "";
     const recentStderrLines = [];
+    let startupLinesLogged = 0;
     if (this.outputTarget.mode === "rtmp") {
       this.ffmpeg.stderr.on("data", (chunk) => {
         stderrBuffer += chunk.toString();
@@ -422,7 +423,17 @@ export class VideoEngine {
           stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
           recentStderrLines.push(line);
           if (recentStderrLines.length > 20) recentStderrLines.shift();
-          if (RTMP_STATUS_LINE_PATTERN.test(line)) {
+          // Unconditionally surface the first ~15 lines regardless of
+          // keyword match - this is FFmpeg's startup banner (input/output
+          // stream mapping, codec negotiation, the "Opening '<dest>' for
+          // writing" line), which confirms whether it actually attempted
+          // the RTMP publish handshake at all. After that, only
+          // connection/error-relevant lines are logged, so the constant
+          // frame=/fps= progress spam doesn't flood the log.
+          if (startupLinesLogged < 15) {
+            startupLinesLogged += 1;
+            console.log(`[VIDEO_ENGINE] FFmpeg RTMP (startup): ${redactStreamSecrets(line)}`);
+          } else if (RTMP_STATUS_LINE_PATTERN.test(line)) {
             console.log(`[VIDEO_ENGINE] FFmpeg RTMP: ${redactStreamSecrets(line)}`);
           }
         }
