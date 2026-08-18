@@ -643,13 +643,6 @@
       <span class="mb-price" id="mb-price-XRP">DATA UNAVAILABLE</span>
       <span class="mb-change mb-unavailable" id="mb-change-XRP">--</span>
     </div>
-    <div class="mb-cell" data-symbol="BNB/USD" id="mb-cell-BNB">
-      <div class="mb-row-top">
-        <span class="mb-ticker">BNB/USD</span>
-      </div>
-      <span class="mb-price" id="mb-price-BNB">DATA UNAVAILABLE</span>
-      <span class="mb-change mb-unavailable" id="mb-change-BNB">--</span>
-    </div>
   </div>
 
   <div id="main-area">
@@ -751,8 +744,7 @@
     // subscribes to all four rotating assets at once. Each asset's candle
     // history is kept fresh in the background continuously; a timer swaps
     // which asset's already-held data is shown via series.setData(), with
-    // no re-subscribe/reconnect on rotation. BNB is intentionally excluded
-    // — it stays tape-only, driven by the separate market-board script.
+    // no re-subscribe/reconnect on rotation.
     const ROTATION_ASSETS = ["BTC", "ETH", "SOL", "XRP"];
     const SYMBOL_OF = { BTC: "BTC/USD", ETH: "ETH/USD", SOL: "SOL/USD", XRP: "XRP/USD" };
     const TICKER_OF = { "BTC/USD": "BTC", "ETH/USD": "ETH", "SOL/USD": "SOL", "XRP/USD": "XRP" };
@@ -1373,16 +1365,15 @@
   //
   // Data source: Kraken's v2 WebSocket "ticker" channel (the same exchange
   // already used for the BTC chart — no new API introduced). If Kraken
-  // does not carry a given pair (e.g. it may not list BNB/USD) or a
-  // subscription is rejected, that asset explicitly shows
-  // "DATA UNAVAILABLE" rather than any simulated/fake value. A price is
-  // only ever displayed after a real message for that exact symbol has
-  // been received.
+  // does not carry a given pair or a subscription is rejected, that asset
+  // explicitly shows "DATA UNAVAILABLE" rather than any simulated/fake
+  // value. A price is only ever displayed after a real message for that
+  // exact symbol has been received.
   //
   // The bottom ticker strip mirrors this same data (no third WebSocket):
   // renderAsset() updates both the market-tape cell and the matching
-  // ticker-strip entry in one place. Unavailable assets (e.g. BNB) are
-  // simply omitted from the scrolling strip.
+  // ticker-strip entry in one place. Unavailable assets are simply
+  // omitted from the scrolling strip.
 
   (function () {
     const STREAM_URL = "wss://ws.kraken.com/v2";
@@ -1391,7 +1382,6 @@
       { symbol: "ETH/USD", ticker: "ETH" },
       { symbol: "SOL/USD", ticker: "SOL" },
       { symbol: "XRP/USD", ticker: "XRP" },
-      { symbol: "BNB/USD", ticker: "BNB" },
     ];
     const RECONNECT_BASE_DELAY_MS = 1000;
     const RECONNECT_MAX_DELAY_MS = 30000;
@@ -1420,7 +1410,7 @@
     }
 
     function renderTickerStrip() {
-      const order = ["BTC", "ETH", "SOL", "XRP", "BNB"];
+      const order = ["BTC", "ETH", "SOL", "XRP"];
       const parts = [];
       order.forEach((ticker) => {
         const state = tickerState[ticker];
