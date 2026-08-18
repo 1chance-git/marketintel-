@@ -459,14 +459,19 @@ export class VideoEngine {
           stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
           recentStderrLines.push(line);
           if (recentStderrLines.length > 20) recentStderrLines.shift();
-          // Unconditionally surface the first ~15 lines regardless of
+          // Unconditionally surface the first ~30 lines regardless of
           // keyword match - this is FFmpeg's startup banner (input/output
-          // stream mapping, codec negotiation, the "Opening '<dest>' for
-          // writing" line), which confirms whether it actually attempted
-          // the RTMP publish handshake at all. After that, only
+          // stream mapping for BOTH the video and audio tracks, codec
+          // negotiation, the "Opening '<dest>' for writing" line), which
+          // confirms whether it actually attempted the RTMP publish
+          // handshake at all. 15 lines cut off before the audio stream
+          // mapping/"Output #0" lines ever printed, making it impossible
+          // to confirm from logs alone whether audio was actually mapped
+          // into the output - 30 comfortably covers both input banners
+          // plus the full output stream mapping. After that, only
           // connection/error-relevant lines are logged, so the constant
           // frame=/fps= progress spam doesn't flood the log.
-          if (startupLinesLogged < 15) {
+          if (startupLinesLogged < 30) {
             startupLinesLogged += 1;
             console.log(`[VIDEO_ENGINE] FFmpeg RTMP (startup): ${redactStreamSecrets(line)}`);
           } else if (RTMP_STATUS_LINE_PATTERN.test(line)) {
