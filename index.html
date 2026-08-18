@@ -356,11 +356,16 @@
     min-height: 0;
   }
 
-  /* Description/What-Matters-Now need much less room than the multi-row
-     ETF+Macro and Narrative+Sentiment cards - a smaller flex share keeps
-     everything within the fixed 720px canvas with comfortable margin. */
-  .card-compact {
-    flex: 0.7;
+  /* Single rotating intelligence viewport takes the bulk of the pane;
+     Market Description below it is a fixed, small footer block. Using a
+     fixed pixel height (rather than a flex share) for the description
+     guarantees its height never depends on how many cards exist above it. */
+  #card-rotator {
+    flex: 1 1 auto;
+  }
+
+  #card-description {
+    flex: 0 0 132px;
   }
 
   #intel-pane .card:last-child {
@@ -522,34 +527,34 @@
     letter-spacing: 0.04em;
   }
 
-  /* "What Matters Now" reads as one highlighted broadcast block rather
-     than another plain row-section — a muted amber accent (reusing the
-     existing connecting-status amber, not a new color), not a gradient
-     or rounded card. */
-  .term-section.term-highlight {
-    border: 1px solid #262210;
-    background: #0b0a06;
-    padding: 5px 8px;
+  /* ---------- Rotating intelligence viewport ---------- */
+  /* One stable card cycles through 5 intelligence categories instead of
+     showing all Grok text simultaneously — the title label and body swap
+     together on a subtle fade, with no change to the card's own size, so
+     rotation never causes layout shift or overflow. */
+  .rotator-body {
+    justify-content: center;
+    transition: opacity 200ms ease-out;
   }
 
-  .term-section.term-highlight .term-section-label {
-    color: #d4b34a;
-    border-bottom-color: #262210;
+  .rotator-body.rotator-fade {
+    opacity: 0;
   }
 
-  /* "What Matters Now" is its own card now (not a sub-section), so the
-     highlight applies to the whole card-body - same muted amber accent. */
-  .card-body.term-highlight {
-    background: #0b0a06;
+  .rotator-slide[hidden] {
+    display: none;
   }
 
-  #card-whatnow .card-title {
-    border-bottom-color: #262210;
-    background: #0b0a06;
+  /* Only one section is ever shown at a time now (vs. two stacked
+     sections previously sharing the card), so rows can run a bit larger
+     for broadcast readability without risking overflow. */
+  .rotator-body .term-rows li {
+    padding: 7px 0;
+    font-size: 13px;
   }
 
-  #card-whatnow .card-title-label {
-    color: #d4b34a;
+  .rotator-body .empty-state {
+    text-align: center;
   }
 
   /* ---------- Market Description ---------- */
@@ -721,60 +726,42 @@
     </div>
 
     <div id="intel-pane">
-      <div class="card card-compact" id="card-description">
+      <div class="card" id="card-rotator">
+        <div class="card-title">
+          <span class="card-title-label" id="rotator-title">ETF / Institutional Flow</span>
+          <span class="card-updated" id="rotator-updated"></span>
+        </div>
+        <div class="card-body term-body rotator-body" id="rotator-body">
+          <div class="rotator-slide" id="slide-etf">
+            <div class="empty-state" id="macro-etf-empty">Waiting for ETF/institutional flow data...</div>
+            <ul class="term-rows" id="macro-etf-list"></ul>
+          </div>
+          <div class="rotator-slide" id="slide-macro" hidden>
+            <div class="empty-state" id="macro-system-empty">Waiting for macro pulse data...</div>
+            <ul class="term-rows" id="macro-system-list"></ul>
+          </div>
+          <div class="rotator-slide" id="slide-narrative" hidden>
+            <div class="empty-state" id="sentiment-narrative-empty">Waiting for narrative data...</div>
+            <ul class="term-rows" id="sentiment-narrative-list"></ul>
+          </div>
+          <div class="rotator-slide" id="slide-sentiment" hidden>
+            <div class="empty-state" id="sentiment-tone-empty">Waiting for sentiment data...</div>
+            <ul class="term-rows" id="sentiment-tone-list"></ul>
+          </div>
+          <div class="rotator-slide" id="slide-whatnow" hidden>
+            <div class="empty-state" id="whatnow-empty-state">Waiting for market intelligence...</div>
+            <ul class="term-rows" id="whatnow-list" hidden></ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="card-description">
         <div class="card-title">
           <span class="card-title-label">Market Description</span>
           <span class="card-updated" id="description-updated"></span>
         </div>
         <div class="card-body desc-body" id="description-body">
           <p class="desc-text" id="description-text">Awaiting sufficient market intelligence.</p>
-        </div>
-      </div>
-
-      <div class="card card-compact" id="card-whatnow">
-        <div class="card-title">
-          <span class="card-title-label">What Matters Now</span>
-          <span class="card-updated" id="whatnow-updated"></span>
-        </div>
-        <div class="card-body term-body term-highlight" id="whatnow-body">
-          <div class="empty-state" id="whatnow-empty-state">Waiting for market intelligence...</div>
-          <ul class="term-rows" id="whatnow-list" hidden></ul>
-        </div>
-      </div>
-
-      <div class="card" id="card-macro">
-        <div class="card-title">
-          <span class="card-title-label">ETF Flows &amp; System Macro</span>
-          <span class="card-updated" id="macro-updated"></span>
-        </div>
-        <div class="card-body term-body" id="macro-body">
-          <div class="empty-state" id="macro-empty-state">Waiting for macro intelligence...</div>
-          <div class="term-section" id="macro-etf-section" hidden>
-            <div class="term-section-label">ETF / Institutional Flow</div>
-            <ul class="term-rows" id="macro-etf-list"></ul>
-          </div>
-          <div class="term-section" id="macro-system-section" hidden>
-            <div class="term-section-label">Macro Pulse</div>
-            <ul class="term-rows" id="macro-system-list"></ul>
-          </div>
-        </div>
-      </div>
-
-      <div class="card" id="card-sentiment">
-        <div class="card-title">
-          <span class="card-title-label">X Narratives &amp; Sentiment</span>
-          <span class="card-updated" id="sentiment-updated"></span>
-        </div>
-        <div class="card-body term-body" id="sentiment-body">
-          <div class="empty-state" id="sentiment-empty-state">Waiting for sentiment intelligence...</div>
-          <div class="term-section" id="sentiment-narrative-section" hidden>
-            <div class="term-section-label">X Narrative Pulse</div>
-            <ul class="term-rows" id="sentiment-narrative-list"></ul>
-          </div>
-          <div class="term-section" id="sentiment-tone-section" hidden>
-            <div class="term-section-label">Market Sentiment</div>
-            <ul class="term-rows" id="sentiment-tone-list"></ul>
-          </div>
         </div>
       </div>
     </div>
@@ -1196,21 +1183,17 @@
     const POLL_INTERVAL_MS = 5000;
     const DATA_URL = "./grok_data.json";
 
-    const macroEmptyEl = document.getElementById("macro-empty-state");
-    const macroEtfSectionEl = document.getElementById("macro-etf-section");
+    const macroEtfEmptyEl = document.getElementById("macro-etf-empty");
     const macroEtfListEl = document.getElementById("macro-etf-list");
-    const macroSystemSectionEl = document.getElementById("macro-system-section");
+    const macroSystemEmptyEl = document.getElementById("macro-system-empty");
     const macroSystemListEl = document.getElementById("macro-system-list");
-    const sentimentEmptyEl = document.getElementById("sentiment-empty-state");
-    const sentimentNarrativeSectionEl = document.getElementById("sentiment-narrative-section");
+    const sentimentNarrativeEmptyEl = document.getElementById("sentiment-narrative-empty");
     const sentimentNarrativeListEl = document.getElementById("sentiment-narrative-list");
-    const sentimentToneSectionEl = document.getElementById("sentiment-tone-section");
+    const sentimentToneEmptyEl = document.getElementById("sentiment-tone-empty");
     const sentimentToneListEl = document.getElementById("sentiment-tone-list");
     const whatNowEmptyEl = document.getElementById("whatnow-empty-state");
     const whatNowListEl = document.getElementById("whatnow-list");
-    const macroUpdatedEl = document.getElementById("macro-updated");
-    const sentimentUpdatedEl = document.getElementById("sentiment-updated");
-    const whatNowUpdatedEl = document.getElementById("whatnow-updated");
+    const rotatorUpdatedEl = document.getElementById("rotator-updated");
     const descriptionUpdatedEl = document.getElementById("description-updated");
     const descriptionTextEl = document.getElementById("description-text");
 
@@ -1241,7 +1224,7 @@
       const label = formatAge(lastSignalTimestamp);
       const isStale = Date.now() - new Date(lastSignalTimestamp).getTime() > STALE_THRESHOLD_MS;
 
-      [macroUpdatedEl, sentimentUpdatedEl, whatNowUpdatedEl, descriptionUpdatedEl].forEach((el) => {
+      [rotatorUpdatedEl, descriptionUpdatedEl].forEach((el) => {
         el.textContent = label;
         el.classList.toggle("stale", isStale);
       });
@@ -1460,9 +1443,10 @@
       const etf = normalizeArray(etfFlows);
       const macro = normalizeArray(systemMacro);
 
-      macroEmptyEl.hidden = etf.length > 0 || macro.length > 0;
-      macroEtfSectionEl.hidden = etf.length === 0;
-      macroSystemSectionEl.hidden = macro.length === 0;
+      macroEtfEmptyEl.hidden = etf.length > 0;
+      macroEtfListEl.hidden = etf.length === 0;
+      macroSystemEmptyEl.hidden = macro.length > 0;
+      macroSystemListEl.hidden = macro.length === 0;
 
       renderRows(macroEtfListEl, etf);
       renderMacroPulse(macroSystemListEl, macro);
@@ -1555,9 +1539,10 @@
       const narratives = normalizeArray(xNarratives);
       const tone = normalizeArray(sentiment);
 
-      sentimentEmptyEl.hidden = narratives.length > 0 || tone.length > 0;
-      sentimentNarrativeSectionEl.hidden = narratives.length === 0;
-      sentimentToneSectionEl.hidden = tone.length === 0;
+      sentimentNarrativeEmptyEl.hidden = narratives.length > 0;
+      sentimentNarrativeListEl.hidden = narratives.length === 0;
+      sentimentToneEmptyEl.hidden = tone.length > 0;
+      sentimentToneListEl.hidden = tone.length === 0;
 
       renderNarrativeBreakdown(sentimentNarrativeListEl, narratives);
       renderSentimentBlock(sentimentToneListEl, tone);
@@ -1604,6 +1589,46 @@
     // Age labels ("Updated Xh ago") drift with real time even between
     // polls, so refresh them independently on a slower cadence.
     setInterval(updateAgeLabels, 30_000);
+
+    // Rotating intelligence viewport — one stable card cycles through the
+    // 5 existing intelligence categories instead of showing all of them
+    // at once. This only toggles which already-rendered slide is visible
+    // and swaps the title label; it never touches data fetching, the
+    // Kraken WebSockets, or the chart above.
+    const ROTATION_SLIDES = [
+      { slideId: "slide-etf", title: "ETF / Institutional Flow" },
+      { slideId: "slide-macro", title: "Macro Pulse" },
+      { slideId: "slide-narrative", title: "X Narrative Pulse" },
+      { slideId: "slide-sentiment", title: "Market Sentiment" },
+      { slideId: "slide-whatnow", title: "What Matters Now" },
+    ];
+    const ROTATION_INTERVAL_MS = 10000;
+    const ROTATION_FADE_MS = 200;
+
+    const rotatorTitleEl = document.getElementById("rotator-title");
+    const rotatorBodyEl = document.getElementById("rotator-body");
+    const rotationSlideEls = ROTATION_SLIDES.map((s) => document.getElementById(s.slideId));
+
+    let rotatorIndex = 0;
+
+    function showRotatorSlide(index) {
+      rotationSlideEls.forEach((el, i) => {
+        el.hidden = i !== index;
+      });
+      rotatorTitleEl.textContent = ROTATION_SLIDES[index].title;
+    }
+
+    function advanceRotator() {
+      rotatorBodyEl.classList.add("rotator-fade");
+      setTimeout(() => {
+        rotatorIndex = (rotatorIndex + 1) % ROTATION_SLIDES.length;
+        showRotatorSlide(rotatorIndex);
+        rotatorBodyEl.classList.remove("rotator-fade");
+      }, ROTATION_FADE_MS);
+    }
+
+    showRotatorSlide(rotatorIndex);
+    setInterval(advanceRotator, ROTATION_INTERVAL_MS);
   })();
 </script>
 <script>
