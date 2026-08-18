@@ -296,13 +296,31 @@ function spawnFfmpeg({ destination, mode }) {
     "-keyint_min", String(CAPTURE_FPS),
   ];
 
-  const args = [
-    "-y",
+  const args = ["-y"];
+
+  if (mode === "rtmp") {
+    // Nothing else in this pipeline throttles output to real time - only
+    // how fast frames get written to stdin does. FFmpeg's RTMP/flv muxer
+    // pushes encoded data to YouTube as fast as it's produced, with no
+    // built-in real-time pacing of its own. Verified locally: piping a
+    // 5s burst of frames with no -readrate produced 5s of declared video
+    // in ~1.06s wall-clock (YouTube's "sending faster than realtime"
+    // error, matching the observed report almost exactly); the same
+    // burst with -readrate 1 (FFmpeg 5.0+, confirmed present: this image
+    // runs 5.1.9) took ~4.62s, correctly paced to ~1x. -readrate throttles
+    // FFmpeg's own reads/encoding to wall-clock speed regardless of how
+    // bursty the upstream frame writes are (Node timer jitter, stdin
+    // backpressure catch-up, etc.), so it's a strictly more robust fix
+    // than trying to perfectly pace the writer side.
+    args.push("-readrate", "1");
+  }
+
+  args.push(
     "-f", "image2pipe",
     "-vcodec", "mjpeg",
     "-framerate", String(CAPTURE_FPS),
     "-i", "-",
-  ];
+  );
 
   if (mode === "rtmp") {
     // YouTube Live's ingest expects an audio track alongside video - a
@@ -311,7 +329,10 @@ function spawnFfmpeg({ destination, mode }) {
     // There's no real audio source in this pipeline (it's a rendered
     // dashboard, not a capture with sound), so generate silence rather
     // than fabricate/omit audio.
-    args.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
+    // -readrate on the audio input too, so both streams stay paced
+    // together rather than the (infinite) silent-audio generator running
+    // ahead of the real-time-throttled video input.
+    args.push("-readrate", "1", "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
     args.push(
       "-map", "0:v:0",
       "-map", "1:a:0",
