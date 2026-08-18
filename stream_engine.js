@@ -280,14 +280,28 @@ function spawnFfmpeg({ destination, mode }) {
     "-vcodec", "mjpeg",
     "-framerate", String(CAPTURE_FPS),
     "-i", "-",
-    ...encodingArgs,
   ];
 
   if (mode === "rtmp") {
+    // YouTube Live's ingest expects an audio track alongside video - a
+    // video-only RTMP stream can connect and encode without any FFmpeg
+    // error, but YouTube never surfaces it as a receiving/healthy stream.
+    // There's no real audio source in this pipeline (it's a rendered
+    // dashboard, not a capture with sound), so generate silence rather
+    // than fabricate/omit audio.
+    args.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
+    args.push(
+      "-map", "0:v:0",
+      "-map", "1:a:0",
+      ...encodingArgs,
+      "-c:a", "aac",
+      "-b:a", "128k",
+      "-ar", "44100",
+    );
     // RTMP requires an FLV container; the destination is an RTMP URL, not a file path.
     args.push("-f", "flv", destination);
   } else {
-    args.push(destination);
+    args.push(...encodingArgs, destination);
   }
 
   const ffmpeg = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
