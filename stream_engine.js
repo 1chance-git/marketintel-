@@ -272,6 +272,28 @@ function spawnFfmpeg({ destination, mode }) {
     "-pix_fmt", "yuv420p",
     "-r", String(CAPTURE_FPS),
     "-s", `${CAPTURE_WIDTH}x${CAPTURE_HEIGHT}`,
+    // Without an explicit bitrate, libx264 falls back to CRF-based rate
+    // control, which adapts *down* to whatever the content needs - this
+    // dashboard is mostly static black background with sparse text/chart
+    // updates, so CRF alone produced ~100Kbps, far under YouTube's 2500Kbps
+    // recommendation for 720p30. -b:v/-maxrate alone only caps the ceiling
+    // and still lets the encoder drop far below it on simple content
+    // (verified: a 5s all-black test clip measured ~10Kbps actual output
+    // even with -b:v/-maxrate/-bufsize set). nal-hrd=cbr forces libx264 to
+    // insert filler data so the stream actually pads up to the target
+    // rate regardless of scene complexity (same test measured ~2400Kbps
+    // actual output with this flag added) - matching YouTube's
+    // recommendation requires this, not just a nominal -b:v value.
+    // force-cfr=1 keeps frame timing constant, which CBR padding requires.
+    // -g/-keyint_min set a keyframe every 2s, which YouTube Live also
+    // expects for stable ingest.
+    "-b:v", "2500k",
+    "-maxrate", "2500k",
+    "-minrate", "2500k",
+    "-bufsize", "5000k",
+    "-x264-params", "nal-hrd=cbr:force-cfr=1",
+    "-g", String(CAPTURE_FPS * 2),
+    "-keyint_min", String(CAPTURE_FPS),
   ];
 
   const args = [

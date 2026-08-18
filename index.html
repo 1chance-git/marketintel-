@@ -347,13 +347,25 @@
   }
 
   .card {
-    flex: 1;
+    flex: 1.3;
     box-sizing: border-box;
     border-bottom: 1px solid #1a1a1a;
     display: flex;
     flex-direction: column;
     overflow: hidden;
     min-height: 0;
+  }
+
+  /* Single rotating intelligence viewport takes the bulk of the pane;
+     Market Description below it is a fixed, small footer block. Using a
+     fixed pixel height (rather than a flex share) for the description
+     guarantees its height never depends on how many cards exist above it. */
+  #card-rotator {
+    flex: 1 1 auto;
+  }
+
+  #card-description {
+    flex: 0 0 132px;
   }
 
   #intel-pane .card:last-child {
@@ -451,17 +463,6 @@
     padding: 6px 12px;
   }
 
-  .term-section-label {
-    font-size: 8.5px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: #5a5a5a;
-    padding-bottom: 2px;
-    margin-bottom: 1px;
-    border-bottom: 1px solid #1a1a1a;
-  }
-
   .term-rows {
     list-style: none;
     margin: 0;
@@ -515,19 +516,86 @@
     letter-spacing: 0.04em;
   }
 
-  /* "What Matters Now" reads as one highlighted broadcast block rather
-     than another plain row-section — a muted amber accent (reusing the
-     existing connecting-status amber, not a new color), not a gradient
-     or rounded card. */
-  .term-section.term-highlight {
-    border: 1px solid #262210;
-    background: #0b0a06;
-    padding: 5px 8px;
+  /* ---------- Rotating intelligence viewport ---------- */
+  /* One stable card cycles through 5 intelligence categories instead of
+     showing all Grok text simultaneously — the title label and body swap
+     together on a subtle fade, with no change to the card's own size, so
+     rotation never causes layout shift or overflow. */
+  .rotator-body {
+    justify-content: center;
+    transition: opacity 200ms ease-out;
   }
 
-  .term-section.term-highlight .term-section-label {
-    color: #d4b34a;
-    border-bottom-color: #262210;
+  .rotator-body.rotator-fade {
+    opacity: 0;
+  }
+
+  .rotator-slide[hidden] {
+    display: none;
+  }
+
+  /* Only one section is ever shown at a time now (vs. two stacked
+     sections previously sharing the card), so rows can run a bit larger
+     for broadcast readability without risking overflow. Rows also switch
+     from a single-line label/value pair to a stacked label-above-value
+     layout that wraps fully — the compact single-line right-aligned
+     value used to hard-clip long Grok sentences (e.g. long REGULATION or
+     narrative lines) with no ellipsis. With only one section's rows on
+     screen at a time there is ample vertical room to show the complete
+     text instead of truncating it. */
+  .rotator-body .term-rows li {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    padding: 8px 0;
+    font-size: 13px;
+  }
+
+  .rotator-body .term-row-label {
+    max-width: 100%;
+  }
+
+  .rotator-body .term-row-value {
+    flex: 1 1 auto;
+    width: 100%;
+    text-align: left;
+    overflow: visible;
+    display: block;
+    -webkit-line-clamp: unset;
+    -webkit-box-orient: unset;
+  }
+
+  .rotator-body .empty-state {
+    text-align: center;
+  }
+
+  /* ---------- Market Description ---------- */
+  .desc-body {
+    flex: 1;
+    padding: 6px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    min-height: 0;
+  }
+
+  .desc-text {
+    margin: 0;
+    width: 100%;
+    font-size: 10.5px;
+    line-height: 1.4;
+    letter-spacing: 0.01em;
+    color: #cfcfcf;
+    text-align: left;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+  }
+
+  .desc-text.desc-empty {
+    color: #4a4a4a;
   }
 
   /* ---------- 5. BOTTOM TICKER ---------- */
@@ -670,43 +738,42 @@
     </div>
 
     <div id="intel-pane">
-      <div class="card" id="card-macro">
+      <div class="card" id="card-rotator">
         <div class="card-title">
-          <span class="card-title-label">ETF Flows &amp; System Macro</span>
-          <span class="card-updated" id="macro-updated"></span>
+          <span class="card-title-label" id="rotator-title">ETF / Institutional Flow</span>
+          <span class="card-updated" id="rotator-updated"></span>
         </div>
-        <div class="card-body term-body" id="macro-body">
-          <div class="empty-state" id="macro-empty-state">Waiting for macro intelligence...</div>
-          <div class="term-section" id="macro-etf-section" hidden>
-            <div class="term-section-label">ETF / Institutional Flow</div>
+        <div class="card-body term-body rotator-body" id="rotator-body">
+          <div class="rotator-slide" id="slide-etf">
+            <div class="empty-state" id="macro-etf-empty">Waiting for ETF/institutional flow data...</div>
             <ul class="term-rows" id="macro-etf-list"></ul>
           </div>
-          <div class="term-section" id="macro-system-section" hidden>
-            <div class="term-section-label">Macro Pulse</div>
+          <div class="rotator-slide" id="slide-macro" hidden>
+            <div class="empty-state" id="macro-system-empty">Waiting for macro pulse data...</div>
             <ul class="term-rows" id="macro-system-list"></ul>
+          </div>
+          <div class="rotator-slide" id="slide-narrative" hidden>
+            <div class="empty-state" id="sentiment-narrative-empty">Waiting for narrative data...</div>
+            <ul class="term-rows" id="sentiment-narrative-list"></ul>
+          </div>
+          <div class="rotator-slide" id="slide-sentiment" hidden>
+            <div class="empty-state" id="sentiment-tone-empty">Waiting for sentiment data...</div>
+            <ul class="term-rows" id="sentiment-tone-list"></ul>
+          </div>
+          <div class="rotator-slide" id="slide-whatnow" hidden>
+            <div class="empty-state" id="whatnow-empty-state">Waiting for market intelligence...</div>
+            <ul class="term-rows" id="whatnow-list" hidden></ul>
           </div>
         </div>
       </div>
 
-      <div class="card" id="card-sentiment">
+      <div class="card" id="card-description">
         <div class="card-title">
-          <span class="card-title-label">X Narratives &amp; Sentiment</span>
-          <span class="card-updated" id="sentiment-updated"></span>
+          <span class="card-title-label">Market Description</span>
+          <span class="card-updated" id="description-updated"></span>
         </div>
-        <div class="card-body term-body" id="sentiment-body">
-          <div class="empty-state" id="sentiment-empty-state">Waiting for sentiment intelligence...</div>
-          <div class="term-section" id="sentiment-narrative-section" hidden>
-            <div class="term-section-label">X Narrative Pulse</div>
-            <ul class="term-rows" id="sentiment-narrative-list"></ul>
-          </div>
-          <div class="term-section" id="sentiment-tone-section" hidden>
-            <div class="term-section-label">Market Sentiment</div>
-            <ul class="term-rows" id="sentiment-tone-list"></ul>
-          </div>
-          <div class="term-section term-highlight" id="whatnow-section" hidden>
-            <div class="term-section-label">What Matters Now</div>
-            <ul class="term-rows" id="whatnow-list"></ul>
-          </div>
+        <div class="card-body desc-body" id="description-body">
+          <p class="desc-text" id="description-text">Awaiting sufficient market intelligence.</p>
         </div>
       </div>
     </div>
@@ -1128,20 +1195,19 @@
     const POLL_INTERVAL_MS = 5000;
     const DATA_URL = "./grok_data.json";
 
-    const macroEmptyEl = document.getElementById("macro-empty-state");
-    const macroEtfSectionEl = document.getElementById("macro-etf-section");
+    const macroEtfEmptyEl = document.getElementById("macro-etf-empty");
     const macroEtfListEl = document.getElementById("macro-etf-list");
-    const macroSystemSectionEl = document.getElementById("macro-system-section");
+    const macroSystemEmptyEl = document.getElementById("macro-system-empty");
     const macroSystemListEl = document.getElementById("macro-system-list");
-    const sentimentEmptyEl = document.getElementById("sentiment-empty-state");
-    const sentimentNarrativeSectionEl = document.getElementById("sentiment-narrative-section");
+    const sentimentNarrativeEmptyEl = document.getElementById("sentiment-narrative-empty");
     const sentimentNarrativeListEl = document.getElementById("sentiment-narrative-list");
-    const sentimentToneSectionEl = document.getElementById("sentiment-tone-section");
+    const sentimentToneEmptyEl = document.getElementById("sentiment-tone-empty");
     const sentimentToneListEl = document.getElementById("sentiment-tone-list");
-    const whatNowSectionEl = document.getElementById("whatnow-section");
+    const whatNowEmptyEl = document.getElementById("whatnow-empty-state");
     const whatNowListEl = document.getElementById("whatnow-list");
-    const macroUpdatedEl = document.getElementById("macro-updated");
-    const sentimentUpdatedEl = document.getElementById("sentiment-updated");
+    const rotatorUpdatedEl = document.getElementById("rotator-updated");
+    const descriptionUpdatedEl = document.getElementById("description-updated");
+    const descriptionTextEl = document.getElementById("description-text");
 
     const STALE_THRESHOLD_MS = 26 * 60 * 60 * 1000; // daily cadence + buffer
     let lastSignalTimestamp = null;
@@ -1170,7 +1236,7 @@
       const label = formatAge(lastSignalTimestamp);
       const isStale = Date.now() - new Date(lastSignalTimestamp).getTime() > STALE_THRESHOLD_MS;
 
-      [macroUpdatedEl, sentimentUpdatedEl].forEach((el) => {
+      [rotatorUpdatedEl, descriptionUpdatedEl].forEach((el) => {
         el.textContent = label;
         el.classList.toggle("stale", isStale);
       });
@@ -1257,11 +1323,17 @@
       return label ? shortenLabel(label) : "—";
     }
 
+    // Grok's arrays are schema-capped at 200 items, but the broadcast
+    // canvas is fixed at 1280x720 - a defensive row cap (applied on top
+    // of each panel's own bounded height/overflow) guarantees the layout
+    // never depends on how much data a given signal happens to contain.
+    const MAX_ROWS_PER_SECTION = 4;
+
     function renderRows(listEl, items) {
       listEl.textContent = "";
       const fragment = document.createDocumentFragment();
 
-      items.forEach((raw) => {
+      items.slice(0, MAX_ROWS_PER_SECTION).forEach((raw) => {
         const { label, value } = splitLabelValue(raw);
         const li = document.createElement("li");
 
@@ -1319,7 +1391,7 @@
       listEl.textContent = "";
       const fragment = document.createDocumentFragment();
 
-      items.forEach((raw) => {
+      items.slice(0, MAX_ROWS_PER_SECTION).forEach((raw) => {
         const { label, value } = splitLabelValue(raw);
         const li = document.createElement("li");
 
@@ -1362,7 +1434,7 @@
         fragment.appendChild(li);
       }
 
-      items.forEach((raw) => {
+      items.slice(0, MAX_ROWS_PER_SECTION).forEach((raw) => {
         const { label, value } = splitLabelValue(raw);
         const li = document.createElement("li");
         const labelSpan = document.createElement("span");
@@ -1383,9 +1455,10 @@
       const etf = normalizeArray(etfFlows);
       const macro = normalizeArray(systemMacro);
 
-      macroEmptyEl.hidden = etf.length > 0 || macro.length > 0;
-      macroEtfSectionEl.hidden = etf.length === 0;
-      macroSystemSectionEl.hidden = macro.length === 0;
+      macroEtfEmptyEl.hidden = etf.length > 0;
+      macroEtfListEl.hidden = etf.length === 0;
+      macroSystemEmptyEl.hidden = macro.length > 0;
+      macroSystemListEl.hidden = macro.length === 0;
 
       renderRows(macroEtfListEl, etf);
       renderMacroPulse(macroSystemListEl, macro);
@@ -1415,7 +1488,8 @@
         rows.push({ label: "OVERALL BIAS", value: biasLabel, raw: bias === "up" ? "bullish" : bias === "down" ? "bearish" : "" });
       }
 
-      whatNowSectionEl.hidden = rows.length === 0;
+      whatNowEmptyEl.hidden = rows.length > 0;
+      whatNowListEl.hidden = rows.length === 0;
       whatNowListEl.textContent = "";
       const fragment = document.createDocumentFragment();
       rows.forEach((row) => {
@@ -1433,13 +1507,54 @@
       whatNowListEl.appendChild(fragment);
     }
 
+    function truncateText(text, maxLen) {
+      if (text.length <= maxLen) return text;
+      const cut = text.slice(0, maxLen);
+      const lastSpace = cut.lastIndexOf(" ");
+      const trimmed = lastSpace > maxLen * 0.6 ? cut.slice(0, lastSpace) : cut;
+      return `${trimmed.trim()}…`;
+    }
+
+    // A short broadcast-style summary built ONLY from existing fields —
+    // not a new analysis system, no API call, no invented facts. Reuses
+    // the first x_narratives/etf_flows/system_macro entries (already
+    // trusted real text, same as What Matters Now above) plus the same
+    // classifyDirection() word-matching used for the Market Sentiment
+    // DIRECTION row, joined into one short paragraph that visually wraps
+    // to a few lines rather than being rendered as separate bullets.
+    function renderDescription(etfFlows, systemMacro, xNarratives, sentiment) {
+      const narratives = normalizeArray(xNarratives);
+      const tone = normalizeArray(sentiment);
+      const etf = normalizeArray(etfFlows);
+      const macro = normalizeArray(systemMacro);
+
+      const lines = [];
+      if (narratives.length) lines.push(truncateText(narratives[0], 96));
+      if (tone.length) {
+        const direction = classifyDirection(tone.join(" "));
+        lines.push(`Overall market tone reads ${direction.toLowerCase()} based on current sentiment signals.`);
+      }
+      if (etf.length && lines.length < 4) lines.push(truncateText(etf[0], 96));
+      if (macro.length && lines.length < 4) lines.push(truncateText(macro[0], 96));
+
+      if (!lines.length) {
+        descriptionTextEl.textContent = "Awaiting sufficient market intelligence.";
+        descriptionTextEl.classList.add("desc-empty");
+        return;
+      }
+
+      descriptionTextEl.classList.remove("desc-empty");
+      descriptionTextEl.textContent = lines.slice(0, 4).join(" "); // textContent only — never innerHTML.
+    }
+
     function renderSentiment(xNarratives, sentiment) {
       const narratives = normalizeArray(xNarratives);
       const tone = normalizeArray(sentiment);
 
-      sentimentEmptyEl.hidden = narratives.length > 0 || tone.length > 0;
-      sentimentNarrativeSectionEl.hidden = narratives.length === 0;
-      sentimentToneSectionEl.hidden = tone.length === 0;
+      sentimentNarrativeEmptyEl.hidden = narratives.length > 0;
+      sentimentNarrativeListEl.hidden = narratives.length === 0;
+      sentimentToneEmptyEl.hidden = tone.length > 0;
+      sentimentToneListEl.hidden = tone.length === 0;
 
       renderNarrativeBreakdown(sentimentNarrativeListEl, narratives);
       renderSentimentBlock(sentimentToneListEl, tone);
@@ -1473,6 +1588,7 @@
 
       renderMacro(data.etf_flows, data.system_macro);
       renderSentiment(data.x_narratives, data.sentiment);
+      renderDescription(data.etf_flows, data.system_macro, data.x_narratives, data.sentiment);
 
       if (typeof data.timestamp === "string" && data.timestamp) {
         lastSignalTimestamp = data.timestamp;
@@ -1485,6 +1601,46 @@
     // Age labels ("Updated Xh ago") drift with real time even between
     // polls, so refresh them independently on a slower cadence.
     setInterval(updateAgeLabels, 30_000);
+
+    // Rotating intelligence viewport — one stable card cycles through the
+    // 5 existing intelligence categories instead of showing all of them
+    // at once. This only toggles which already-rendered slide is visible
+    // and swaps the title label; it never touches data fetching, the
+    // Kraken WebSockets, or the chart above.
+    const ROTATION_SLIDES = [
+      { slideId: "slide-etf", title: "ETF / Institutional Flow" },
+      { slideId: "slide-macro", title: "Macro Pulse" },
+      { slideId: "slide-narrative", title: "X Narrative Pulse" },
+      { slideId: "slide-sentiment", title: "Market Sentiment" },
+      { slideId: "slide-whatnow", title: "What Matters Now" },
+    ];
+    const ROTATION_INTERVAL_MS = 10000;
+    const ROTATION_FADE_MS = 200;
+
+    const rotatorTitleEl = document.getElementById("rotator-title");
+    const rotatorBodyEl = document.getElementById("rotator-body");
+    const rotationSlideEls = ROTATION_SLIDES.map((s) => document.getElementById(s.slideId));
+
+    let rotatorIndex = 0;
+
+    function showRotatorSlide(index) {
+      rotationSlideEls.forEach((el, i) => {
+        el.hidden = i !== index;
+      });
+      rotatorTitleEl.textContent = ROTATION_SLIDES[index].title;
+    }
+
+    function advanceRotator() {
+      rotatorBodyEl.classList.add("rotator-fade");
+      setTimeout(() => {
+        rotatorIndex = (rotatorIndex + 1) % ROTATION_SLIDES.length;
+        showRotatorSlide(rotatorIndex);
+        rotatorBodyEl.classList.remove("rotator-fade");
+      }, ROTATION_FADE_MS);
+    }
+
+    showRotatorSlide(rotatorIndex);
+    setInterval(advanceRotator, ROTATION_INTERVAL_MS);
   })();
 </script>
 <script>
