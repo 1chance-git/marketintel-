@@ -574,7 +574,7 @@
     flex: 1;
     padding: 6px 12px;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: flex-start;
     min-height: 0;
   }
@@ -582,14 +582,21 @@
   .desc-text {
     margin: 0;
     width: 100%;
+    height: 100%;
     font-size: 10.5px;
     line-height: 1.4;
     letter-spacing: 0.01em;
     color: #cfcfcf;
     text-align: left;
     overflow: hidden;
+    /* line-clamp:6 (rather than the card's exact fit) leaves a small
+       safety margin below the ~4 lines real content typically needs,
+       while still guaranteeing the box can never grow past #card-
+       description's fixed height. A too-low clamp value here previously
+       cut off real text (e.g. "...Fear & Greed Index: ~34-37 (Fear)")
+       even though the card had visible room left over. */
     display: -webkit-box;
-    -webkit-line-clamp: 4;
+    -webkit-line-clamp: 6;
     -webkit-box-orient: vertical;
     word-break: break-word;
   }
