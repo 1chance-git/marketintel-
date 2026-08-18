@@ -348,22 +348,26 @@ export class VideoEngine {
       this.shutdown(1);
     });
 
+    // FFmpeg's stderr is where RTMP connection status/errors show up
+    // (handshake, auth rejection, connection reset, etc.) - normally
+    // swallowed entirely, but for RTMP that means no way to ever confirm a
+    // real connection from logs. Kept as a rolling buffer of the last few
+    // lines (never the constant frame=/fps= progress spam) so that if
+    // FFmpeg exits abnormally, whatever it said right before dying can be
+    // flushed even if it didn't end in a newline - the stream URL/key is
+    // stripped before anything is logged, as defense in depth on top of
+    // never logging this.outputTarget.destination directly.
+    let stderrBuffer = "";
+    const recentStderrLines = [];
     if (this.outputTarget.mode === "rtmp") {
-      // FFmpeg's stderr is where RTMP connection status/errors show up
-      // (handshake, auth rejection, connection reset, etc.) - normally
-      // swallowed entirely, but for RTMP that means no way to ever confirm
-      // a real connection from logs. Surface only lines that look
-      // connection/error-relevant (never the constant frame=/fps=
-      // progress spam), and strip the stream URL/key from anything before
-      // it's logged, as defense in depth on top of never logging
-      // this.outputTarget.destination directly.
-      let stderrBuffer = "";
       this.ffmpeg.stderr.on("data", (chunk) => {
         stderrBuffer += chunk.toString();
         let newlineIndex;
         while ((newlineIndex = stderrBuffer.indexOf("\n")) !== -1) {
           const line = stderrBuffer.slice(0, newlineIndex);
           stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
+          recentStderrLines.push(line);
+          if (recentStderrLines.length > 20) recentStderrLines.shift();
           if (RTMP_STATUS_LINE_PATTERN.test(line)) {
             console.log(`[VIDEO_ENGINE] FFmpeg RTMP: ${redactStreamSecrets(line)}`);
           }
@@ -379,6 +383,15 @@ export class VideoEngine {
       this.ffmpeg.once("close", (code) => {
         if (!this.shuttingDown && code !== 0) {
           console.error(`[VIDEO_ENGINE] FFmpeg terminated unexpectedly (code=${code})`);
+          if (this.outputTarget.mode === "rtmp") {
+            // Flush anything still sitting in the buffer (the final chunk
+            // often has no trailing newline) plus the last few complete
+            // lines, so a crash-time RTMP error isn't silently dropped.
+            if (stderrBuffer.trim()) recentStderrLines.push(stderrBuffer);
+            recentStderrLines.slice(-10).forEach((line) => {
+              console.error(`[VIDEO_ENGINE] FFmpeg RTMP (at exit): ${redactStreamSecrets(line)}`);
+            });
+          }
         } else {
           console.log(`[VIDEO_ENGINE] FFmpeg process closed (code=${code})`);
         }
