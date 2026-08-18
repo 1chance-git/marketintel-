@@ -1001,8 +1001,15 @@
         fallbackEl.style.display = "none";
       }
 
-      candleSeries.setData(candles);
-      chart.timeScale().fitContent();
+      try {
+        candleSeries.setData(candles);
+        chart.timeScale().fitContent();
+      } catch (err) {
+        // Same defense-in-depth as candleSeries.update() above - a bad
+        // setData() call (e.g. from a corrupted background series) should
+        // never be allowed to crash the whole render loop.
+        console.error("[CHART] candleSeries.setData failed:", err);
+      }
       renderedTicker = ticker;
       renderActiveHeader();
     }
@@ -1076,6 +1083,15 @@
       const last = series[series.length - 1];
       if (last && last.time === candle.time) {
         series[series.length - 1] = candle;
+      } else if (last && candle.time < last.time) {
+        // Lightweight Charts requires strictly ascending time for
+        // series.update()/setData() - an out-of-order candle (e.g. a
+        // late/duplicate message racing the backfill snapshot) pushed
+        // onto the end anyway would break that invariant internally and
+        // has been observed to throw an uncaught "Value is null" error
+        // that kills the chart's render loop for the rest of the browser
+        // session. Drop it rather than corrupt the series ordering.
+        return;
       } else {
         series.push(candle);
       }
@@ -1091,7 +1107,26 @@
       // the incoming asset's candle mid-fade). The header can still
       // reflect activeTicker immediately since it's not chart-series state.
       if (ticker === renderedTicker) {
-        candleSeries.update(candle);
+        try {
+          candleSeries.update(candle);
+        } catch (err) {
+          // Defense in depth: never let a single bad update crash the
+          // page's render loop. A failed update() can leave the chart
+          // library's own internal series state corrupted, which then
+          // makes every subsequent update() for this ticker throw the
+          // same error too (observed in production as the same "Value is
+          // null" error repeating dozens of times a minute, with the
+          // chart staying blank until the whole process was restarted).
+          // Recover by rebuilding the series from our own already-clean,
+          // ascending-time candleData array via setData() - this resets
+          // the library's internal state instead of leaving it stuck.
+          console.error("[CHART] candleSeries.update failed, rebuilding series:", err);
+          try {
+            candleSeries.setData(series);
+          } catch (rebuildErr) {
+            console.error("[CHART] series rebuild also failed:", rebuildErr);
+          }
+        }
         fallbackEl.style.display = "none";
       }
       if (ticker === activeTicker) {
