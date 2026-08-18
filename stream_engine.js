@@ -434,8 +434,24 @@ export class VideoEngine {
       this.page = await this.browser.newPage();
       await this.page.setViewport({ width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT });
 
+      // Repeating page errors (e.g. one thrown from inside a per-frame/
+      // per-message render callback) can fire dozens of times a minute -
+      // log the full stack once, then just count further occurrences of
+      // the same message, so we get enough detail to diagnose without
+      // flooding the log.
+      let lastPageErrorMessage = null;
+      let pageErrorRepeatCount = 0;
       this.page.on("pageerror", (err) => {
-        console.error(`[VIDEO_ENGINE] Page error: ${err.message}`);
+        if (err.message === lastPageErrorMessage) {
+          pageErrorRepeatCount += 1;
+          if (pageErrorRepeatCount % 20 === 0) {
+            console.error(`[VIDEO_ENGINE] Page error (repeated ${pageErrorRepeatCount}x): ${err.message}`);
+          }
+          return;
+        }
+        lastPageErrorMessage = err.message;
+        pageErrorRepeatCount = 1;
+        console.error(`[VIDEO_ENGINE] Page error: ${err.message}\n${err.stack || "(no stack)"}`);
       });
       this.page.on("error", (err) => {
         console.error(`[VIDEO_ENGINE] Page crashed: ${err.message}`);
