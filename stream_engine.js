@@ -141,14 +141,37 @@ const FRAME_INTERVAL_MS = 1000 / CAPTURE_FPS;
 //
 //   YOUTUBE_LIVE_URL unset/empty      -> MODE 1: encode to local_stream_test.mp4
 //   YOUTUBE_LIVE_URL === "rtmp://..." -> MODE 2: stream out via FFmpeg FLV/RTMP
+//
+// Railway does not support interpolating a ${{reference}} inside a larger
+// literal string - a variable's value must be either a pure reference or
+// pure literal text, never a mix. So if the full rtmp:// URL isn't set
+// directly as YOUTUBE_LIVE_URL, fall back to building it from separate
+// Stream_URL + Stream_Key variables (also never hardcoded/committed here).
 // ---------------------------------------------------------------------------
-const YOUTUBE_LIVE_URL = process.env.YOUTUBE_LIVE_URL || null;
+function resolveYoutubeLiveUrlSource() {
+  const direct = process.env.YOUTUBE_LIVE_URL || null;
+  if (direct && direct.startsWith("rtmp://")) {
+    return { url: direct, source: "YOUTUBE_LIVE_URL" };
+  }
+
+  const streamUrl = process.env.Stream_URL;
+  const streamKey = process.env.Stream_Key;
+  if (streamUrl && streamKey) {
+    return { url: `${streamUrl.replace(/\/+$/, "")}/${streamKey}`, source: "Stream_URL+Stream_Key" };
+  }
+
+  return { url: null, source: "none" };
+}
+
+const { url: YOUTUBE_LIVE_URL, source: YOUTUBE_LIVE_URL_SOURCE } = resolveYoutubeLiveUrlSource();
 
 // Structural-only diagnostic - never logs the value itself, just enough
 // shape information (present? how long? does it look like a real RTMP
-// URL?) to debug a misconfigured variable without ever exposing the key.
+// URL? which variable(s) it came from) to debug a misconfigured variable
+// without ever exposing the key.
 console.log(
-  `[VIDEO_ENGINE] YOUTUBE_LIVE_URL configured=${!!YOUTUBE_LIVE_URL} ` +
+  `[VIDEO_ENGINE] YOUTUBE_LIVE_URL resolved: source=${YOUTUBE_LIVE_URL_SOURCE} ` +
+    `configured=${!!YOUTUBE_LIVE_URL} ` +
     `length=${YOUTUBE_LIVE_URL ? YOUTUBE_LIVE_URL.length : 0} ` +
     `startsWithRtmp=${YOUTUBE_LIVE_URL ? YOUTUBE_LIVE_URL.startsWith("rtmp://") : false} ` +
     `hasWhitespace=${YOUTUBE_LIVE_URL ? /\s/.test(YOUTUBE_LIVE_URL) : false}`
