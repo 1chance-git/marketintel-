@@ -188,6 +188,22 @@ function startLocalServer(rootDir) {
   });
 }
 
+// Matches FFmpeg stderr lines worth surfacing for RTMP connection
+// diagnostics (handshake/connect/auth/error/close events), while
+// excluding the high-frequency "frame=... fps=... bitrate=..." progress
+// line that FFmpeg prints continuously during normal operation.
+const RTMP_STATUS_LINE_PATTERN = /connect|handshak|auth|refused|reset|timed? ?out|forbidden|unauthoriz|reject|fail|error|closing|opening/i;
+
+function redactStreamSecrets(line) {
+  let sanitized = line;
+  if (YOUTUBE_LIVE_URL) {
+    sanitized = sanitized.split(YOUTUBE_LIVE_URL).join("[REDACTED]");
+  }
+  // Defense in depth: strip any rtmp:// URL even if it doesn't match the
+  // configured destination exactly (e.g. a differently-cased echo).
+  return sanitized.replace(/rtmp:\/\/\S+/gi, "rtmp://[REDACTED]");
+}
+
 function resolveOutputTarget(localOutputPath) {
   if (YOUTUBE_LIVE_URL) {
     return { destination: YOUTUBE_LIVE_URL, mode: "rtmp" };
@@ -332,9 +348,32 @@ export class VideoEngine {
       this.shutdown(1);
     });
 
-    this.ffmpeg.stderr.on("data", () => {
-      // FFmpeg logs progress/diagnostics to stderr; swallow unless debugging.
-    });
+    if (this.outputTarget.mode === "rtmp") {
+      // FFmpeg's stderr is where RTMP connection status/errors show up
+      // (handshake, auth rejection, connection reset, etc.) - normally
+      // swallowed entirely, but for RTMP that means no way to ever confirm
+      // a real connection from logs. Surface only lines that look
+      // connection/error-relevant (never the constant frame=/fps=
+      // progress spam), and strip the stream URL/key from anything before
+      // it's logged, as defense in depth on top of never logging
+      // this.outputTarget.destination directly.
+      let stderrBuffer = "";
+      this.ffmpeg.stderr.on("data", (chunk) => {
+        stderrBuffer += chunk.toString();
+        let newlineIndex;
+        while ((newlineIndex = stderrBuffer.indexOf("\n")) !== -1) {
+          const line = stderrBuffer.slice(0, newlineIndex);
+          stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
+          if (RTMP_STATUS_LINE_PATTERN.test(line)) {
+            console.log(`[VIDEO_ENGINE] FFmpeg RTMP: ${redactStreamSecrets(line)}`);
+          }
+        }
+      });
+    } else {
+      this.ffmpeg.stderr.on("data", () => {
+        // FFmpeg logs progress/diagnostics to stderr; swallow unless debugging.
+      });
+    }
 
     this.ffmpegExitPromise = new Promise((resolve) => {
       this.ffmpeg.once("close", (code) => {
