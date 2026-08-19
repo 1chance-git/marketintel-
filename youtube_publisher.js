@@ -16,6 +16,17 @@
 // credentials below aren't configured, this module logs once and does
 // nothing, and the pipeline behaves exactly as before (manual Go Live).
 //
+// A broadcast created with contentDetails.enableAutoStart=true is left
+// alone entirely (see maybeTransition below) - verified against production
+// that YouTube rejects *both* an API transition call on such a broadcast
+// (403 "Invalid transition") *and* rejects turning enableAutoStart off
+// after the broadcast has already started receiving a stream (403
+// "Modification of enableAutoStart is not allowed in current status"). For
+// that case there is nothing safe for this module to do except defer to
+// YouTube's own auto-start, which needs a sustained, uninterrupted healthy
+// connection to trigger - so avoid redeploying (which restarts FFmpeg and
+// resets that connection) once a broadcast is waiting on it.
+//
 // Required env vars (Railway service Variables, never committed here):
 //   YOUTUBE_OAUTH_CLIENT_ID      - OAuth 2.0 client ID from Google Cloud Console
 //   YOUTUBE_OAUTH_CLIENT_SECRET  - matching client secret
@@ -26,6 +37,21 @@
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const API_BASE = "https://www.googleapis.com/youtube/v3";
+const FETCH_TIMEOUT_MS = 15_000;
+
+// A stalled fetch (network partition, YouTube API hang) would otherwise
+// leave tick() in flight indefinitely, silently pausing all polling for a
+// process meant to run unattended for weeks - every network call in this
+// module goes through this so a hang can't outlast the timeout.
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 let cachedAccessToken = null;
 let cachedAccessTokenExpiry = 0;
@@ -34,7 +60,7 @@ async function getAccessToken({ clientId, clientSecret, refreshToken }) {
   if (cachedAccessToken && Date.now() < cachedAccessTokenExpiry - 30_000) {
     return cachedAccessToken;
   }
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetchWithTimeout(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -62,7 +88,7 @@ async function findPublishableBroadcast(accessToken) {
   // verified against production) - mine=true alone returns broadcasts across
   // all lifecycle states, which is filtered client-side below anyway.
   const url = `${API_BASE}/liveBroadcasts?part=id,status,contentDetails&mine=true&maxResults=25`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
     throw new Error(`liveBroadcasts.list failed: ${res.status} ${await res.text()}`);
   }
@@ -74,35 +100,9 @@ async function findPublishableBroadcast(accessToken) {
   ) || null;
 }
 
-// enableAutoStart racing our own API-driven transition call is a documented
-// cause of YouTube rejecting the transition outright (verified against
-// production: this broadcast had enableAutoStart=true, active+healthy bound
-// stream confirmed directly via liveStreams.list, yet every ready->testing
-// and ready->live transition attempt was rejected 403 "Invalid transition").
-// Turn it off so our explicit transition calls are the only thing driving
-// the broadcast's lifecycle.
-async function disableAutoStart(accessToken, broadcastId, contentDetails) {
-  const url = `${API_BASE}/liveBroadcasts?part=contentDetails`;
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    // YouTube's update endpoint requires enableMonitorStream (nested inside
-    // monitorStream) to be present in the body even though we're only
-    // changing enableAutoStart - verified against production: omitting it
-    // returned 400 "The field enableMonitorStream is required". Pass through
-    // the broadcast's existing contentDetails and override just the one
-    // field, rather than trying to guess the full set of required fields.
-    body: JSON.stringify({ id: broadcastId, contentDetails: { ...contentDetails, enableAutoStart: false } }),
-  });
-  if (!res.ok) {
-    throw new Error(`liveBroadcasts.update(disableAutoStart) failed: ${res.status} ${await res.text()}`);
-  }
-  return res.json();
-}
-
 async function transitionBroadcast(accessToken, broadcastId, targetStatus) {
   const url = `${API_BASE}/liveBroadcasts/transition?broadcastStatus=${targetStatus}&id=${encodeURIComponent(broadcastId)}&part=id,status`;
-  const res = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } });
+  const res = await fetchWithTimeout(url, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
     throw new Error(`liveBroadcasts.transition(${targetStatus}) failed: ${res.status} ${await res.text()}`);
   }
@@ -122,11 +122,22 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
     return null;
   }
 
-  // Once a given broadcast has reached "live", don't keep retrying it every
-  // tick (YouTube would just reject the redundant transition) - but do keep
-  // polling indefinitely so a *new* broadcast (e.g. the next day's) gets
-  // picked up and published automatically too.
+  // Once a given broadcast has reached "live" (or is a lost cause we've
+  // already logged about), don't keep acting/logging on it every tick - but
+  // do keep polling indefinitely so a *new* broadcast (e.g. the next day's)
+  // gets picked up automatically too. Bounded so a months-long process can't
+  // accumulate these forever: broadcast IDs are short-lived in practice (one
+  // per day/session), so a small cap is enough headroom without growing
+  // unbounded across weeks of uptime.
+  const MAX_TRACKED = 500;
   const alreadyLive = new Set();
+  const deferredToAutoStart = new Set();
+  const trackBounded = (set, id) => {
+    if (set.size >= MAX_TRACKED) {
+      set.delete(set.values().next().value);
+    }
+    set.add(id);
+  };
 
   const tick = async () => {
     try {
@@ -136,8 +147,16 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
         return;
       }
       if (broadcast.contentDetails?.enableAutoStart) {
-        console.log(`[YOUTUBE_PUBLISH] Broadcast ${broadcast.id} has enableAutoStart=true, which conflicts with our own transition calls - disabling it`);
-        await disableAutoStart(accessToken, broadcast.id, broadcast.contentDetails);
+        // Verified against production: YouTube rejects both an API
+        // transition call on such a broadcast (403 "Invalid transition")
+        // and turning enableAutoStart off after the broadcast has started
+        // receiving a stream (403 "enableAutoStartModificationNotAllowed").
+        // Nothing safe to do here except wait for YouTube's own auto-start.
+        if (!deferredToAutoStart.has(broadcast.id)) {
+          trackBounded(deferredToAutoStart, broadcast.id);
+          console.log(`[YOUTUBE_PUBLISH] Broadcast ${broadcast.id} has enableAutoStart=true, which YouTube won't let us override or transition around via the API - deferring to YouTube's own auto-start (needs a sustained, uninterrupted healthy connection to trigger)`);
+        }
+        return;
       }
       // YouTube only allows ready -> testing -> live, not ready -> live
       // directly (verified against production: a direct ready->live call
@@ -149,7 +168,7 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
       console.log(`[YOUTUBE_PUBLISH] Found broadcast ${broadcast.id} in lifeCycleStatus=${broadcast.status.lifeCycleStatus} with a bound stream - transitioning to ${targetStatus}`);
       const result = await transitionBroadcast(accessToken, broadcast.id, targetStatus);
       if (targetStatus === "live") {
-        alreadyLive.add(broadcast.id);
+        trackBounded(alreadyLive, broadcast.id);
       }
       console.log(`[YOUTUBE_PUBLISH] Transition succeeded: broadcast=${broadcast.id} lifeCycleStatus=${result.status?.lifeCycleStatus}`);
     } catch (err) {
