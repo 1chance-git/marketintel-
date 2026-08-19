@@ -74,6 +74,26 @@ async function findPublishableBroadcast(accessToken) {
   ) || null;
 }
 
+// enableAutoStart racing our own API-driven transition call is a documented
+// cause of YouTube rejecting the transition outright (verified against
+// production: this broadcast had enableAutoStart=true, active+healthy bound
+// stream confirmed directly via liveStreams.list, yet every ready->testing
+// and ready->live transition attempt was rejected 403 "Invalid transition").
+// Turn it off so our explicit transition calls are the only thing driving
+// the broadcast's lifecycle.
+async function disableAutoStart(accessToken, broadcastId) {
+  const url = `${API_BASE}/liveBroadcasts?part=contentDetails`;
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ id: broadcastId, contentDetails: { enableAutoStart: false } }),
+  });
+  if (!res.ok) {
+    throw new Error(`liveBroadcasts.update(disableAutoStart) failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
 async function transitionBroadcast(accessToken, broadcastId, targetStatus) {
   const url = `${API_BASE}/liveBroadcasts/transition?broadcastStatus=${targetStatus}&id=${encodeURIComponent(broadcastId)}&part=id,status`;
   const res = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } });
@@ -108,6 +128,10 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
       const broadcast = await findPublishableBroadcast(accessToken);
       if (!broadcast || alreadyLive.has(broadcast.id)) {
         return;
+      }
+      if (broadcast.contentDetails?.enableAutoStart) {
+        console.log(`[YOUTUBE_PUBLISH] Broadcast ${broadcast.id} has enableAutoStart=true, which conflicts with our own transition calls - disabling it`);
+        await disableAutoStart(accessToken, broadcast.id);
       }
       // YouTube only allows ready -> testing -> live, not ready -> live
       // directly (verified against production: a direct ready->live call
