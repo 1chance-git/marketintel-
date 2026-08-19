@@ -665,14 +665,23 @@
     max-width: 100%;
   }
 
+  /* Bounded to 3 lines rather than fully unclamped: real Grok output can
+     run to 250+ characters per line (much longer than the placeholder
+     text this was originally tuned against), and with MAX_ROWS_PER_SECTION
+     up to 4 unbounded rows, that overflowed the fixed rotator-body height.
+     3 lines still shows most real sentences in full (the earlier "hard
+     clip" bug this replaced was a forced single-line clamp with no
+     ellipsis, not a multi-line one - clamping only kicks in when content
+     actually exceeds the line count, so short values are unaffected). */
   .rotator-body .term-row-value {
     flex: 1 1 auto;
     width: 100%;
     text-align: left;
-    overflow: visible;
-    display: block;
-    -webkit-line-clamp: unset;
-    -webkit-box-orient: unset;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
   }
 
   .rotator-body .empty-state {
@@ -1969,13 +1978,13 @@
       const macro = normalizeArray(systemMacro);
 
       const lines = [];
-      if (narratives.length) lines.push(truncateText(narratives[0], 96));
+      if (narratives.length) lines.push(truncateText(narratives[0], 80));
       if (tone.length) {
         const direction = classifyDirection(tone.join(" "));
         lines.push(`Overall market tone reads ${direction.toLowerCase()} based on current sentiment signals.`);
       }
-      if (etf.length && lines.length < 4) lines.push(truncateText(etf[0], 96));
-      if (macro.length && lines.length < 4) lines.push(truncateText(macro[0], 96));
+      if (etf.length && lines.length < 4) lines.push(truncateText(etf[0], 80));
+      if (macro.length && lines.length < 4) lines.push(truncateText(macro[0], 80));
 
       if (!lines.length) {
         descriptionTextEl.textContent = "Awaiting sufficient market intelligence.";
