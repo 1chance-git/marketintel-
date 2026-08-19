@@ -1102,8 +1102,17 @@
 
     // Renders the header (ticker/price/%) for whichever asset is currently
     // active, from that asset's own already-tracked state — never fetches.
+    // Reads renderedTicker (not activeTicker): activeTicker flips
+    // instantly on rotation, but the chart/rotation-dots swap is
+    // deferred behind the 200ms fade (see rotateTo()/renderActiveAsset()).
+    // Using activeTicker here let a live tick that arrives mid-fade
+    // repaint the header to the new asset while the chart still visibly
+    // showed the old one. renderedTicker always matches whatever is
+    // actually on screen, at every call site (it's set to activeTicker
+    // as part of the same swap that calls this function from
+    // renderActiveAsset(), so the two are never out of sync there).
     function renderActiveHeader(flash) {
-      const ticker = activeTicker;
+      const ticker = renderedTicker;
       const state = assetState[ticker];
       const symbol = SYMBOL_OF[ticker];
 
@@ -1472,7 +1481,15 @@
         updateChartIndicators(series);
         fallbackEl.style.display = "none";
       }
-      if (ticker === activeTicker) {
+      // Gated on renderedTicker (not activeTicker) to match the chart-
+      // series update above: activeTicker flips instantly on rotation,
+      // but the chart/rotation-dots swap is deferred behind the 200ms
+      // fade. Gating this on activeTicker let a live tick during that
+      // window repaint the header/price to the new asset while the chart
+      // and rotation-dots still showed the old one - a real, visible
+      // (if transient) mismatch between header and chart on a broadcast
+      // feed. Using renderedTicker keeps all three in lockstep.
+      if (ticker === renderedTicker) {
         let flash = null;
         if (prevPrice !== null) {
           if (candle.close > prevPrice) flash = "up";
