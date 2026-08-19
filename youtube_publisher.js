@@ -74,11 +74,11 @@ async function findPublishableBroadcast(accessToken) {
   ) || null;
 }
 
-async function transitionToLive(accessToken, broadcastId) {
-  const url = `${API_BASE}/liveBroadcasts/transition?broadcastStatus=live&id=${encodeURIComponent(broadcastId)}&part=id,status`;
+async function transitionBroadcast(accessToken, broadcastId, targetStatus) {
+  const url = `${API_BASE}/liveBroadcasts/transition?broadcastStatus=${targetStatus}&id=${encodeURIComponent(broadcastId)}&part=id,status`;
   const res = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
-    throw new Error(`liveBroadcasts.transition failed: ${res.status} ${await res.text()}`);
+    throw new Error(`liveBroadcasts.transition(${targetStatus}) failed: ${res.status} ${await res.text()}`);
   }
   return res.json();
 }
@@ -96,22 +96,31 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
     return null;
   }
 
-  // Once a given broadcast ID has been transitioned, don't keep retrying it
-  // every tick (YouTube would just reject the redundant transition) - but do
-  // keep polling indefinitely so a *new* broadcast (e.g. the next day's) gets
+  // Once a given broadcast has reached "live", don't keep retrying it every
+  // tick (YouTube would just reject the redundant transition) - but do keep
+  // polling indefinitely so a *new* broadcast (e.g. the next day's) gets
   // picked up and published automatically too.
-  const alreadyTransitioned = new Set();
+  const alreadyLive = new Set();
 
   const tick = async () => {
     try {
       const accessToken = await getAccessToken({ clientId, clientSecret, refreshToken });
       const broadcast = await findPublishableBroadcast(accessToken);
-      if (!broadcast || alreadyTransitioned.has(broadcast.id)) {
+      if (!broadcast || alreadyLive.has(broadcast.id)) {
         return;
       }
-      console.log(`[YOUTUBE_PUBLISH] Found broadcast ${broadcast.id} in lifeCycleStatus=${broadcast.status.lifeCycleStatus} with a bound stream - transitioning to live`);
-      const result = await transitionToLive(accessToken, broadcast.id);
-      alreadyTransitioned.add(broadcast.id);
+      // YouTube only allows ready -> testing -> live, not ready -> live
+      // directly (verified against production: a direct ready->live call
+      // was rejected with 403 "Invalid transition"/invalidTransition). So a
+      // broadcast in "ready" needs an intermediate hop to "testing" first;
+      // the next tick will find it in "testing" and finish the hop to
+      // "live".
+      const targetStatus = broadcast.status.lifeCycleStatus === "ready" ? "testing" : "live";
+      console.log(`[YOUTUBE_PUBLISH] Found broadcast ${broadcast.id} in lifeCycleStatus=${broadcast.status.lifeCycleStatus} with a bound stream - transitioning to ${targetStatus}`);
+      const result = await transitionBroadcast(accessToken, broadcast.id, targetStatus);
+      if (targetStatus === "live") {
+        alreadyLive.add(broadcast.id);
+      }
       console.log(`[YOUTUBE_PUBLISH] Transition succeeded: broadcast=${broadcast.id} lifeCycleStatus=${result.status?.lifeCycleStatus}`);
     } catch (err) {
       // Transient failures (stream health not yet good enough for YouTube to
