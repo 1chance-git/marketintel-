@@ -57,7 +57,11 @@ async function getAccessToken({ clientId, clientSecret, refreshToken }) {
 // wired to receive our RTMP feed) and its lifecycle is "ready" or "testing" -
 // the two states YouTube allows transitioning to "live" from.
 async function findPublishableBroadcast(accessToken) {
-  const url = `${API_BASE}/liveBroadcasts?part=id,status,contentDetails&broadcastStatus=all&broadcastType=all&mine=true&maxResults=25`;
+  // mine and broadcastStatus are mutually exclusive params on this endpoint
+  // (YouTube API rejects the combination with "Incompatible parameters" -
+  // verified against production) - mine=true alone returns broadcasts across
+  // all lifecycle states, which is filtered client-side below anyway.
+  const url = `${API_BASE}/liveBroadcasts?part=id,status,contentDetails&mine=true&maxResults=25`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
     throw new Error(`liveBroadcasts.list failed: ${res.status} ${await res.text()}`);
