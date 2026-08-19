@@ -313,7 +313,19 @@ function spawnFfmpeg({ destination, mode }) {
     "-maxrate", "2500k",
     "-minrate", "2500k",
     "-bufsize", "5000k",
-    "-x264-params", "nal-hrd=cbr:force-cfr=1",
+    // ultrafast's internal defaults (cabac=0, bframes=0) silently force
+    // libx264 into Constrained Baseline profile even with -profile:v main
+    // explicitly set - verified locally (ffmpeg startup log showed
+    // "profile Constrained Baseline" despite -profile:v main). YouTube
+    // Live prefers Main/High profile; Constrained Baseline appears to be
+    // the cause of broadcasts getting stuck in "Preparing stream" and
+    // never reaching a healthy ingest state. Forcing cabac=1 in
+    // -x264-params overrides ultrafast's default and produces genuine
+    // Main profile (verified locally: startup log then showed "profile
+    // Main"), at negligible measured CPU cost - well within the 8 vCPU
+    // headroom this container now has.
+    "-profile:v", "main",
+    "-x264-params", "nal-hrd=cbr:force-cfr=1:cabac=1",
     "-g", String(CAPTURE_FPS * 2),
     "-keyint_min", String(CAPTURE_FPS),
   ];
