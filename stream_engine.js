@@ -534,19 +534,28 @@ export class VideoEngine {
           stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
           recentStderrLines.push(line);
           if (recentStderrLines.length > 20) recentStderrLines.shift();
-          // Unconditionally surface the first ~30 lines regardless of
-          // keyword match - this is FFmpeg's startup banner (input/output
-          // stream mapping for BOTH the video and audio tracks, codec
-          // negotiation, the "Opening '<dest>' for writing" line), which
-          // confirms whether it actually attempted the RTMP publish
-          // handshake at all. 15 lines cut off before the audio stream
-          // mapping/"Output #0" lines ever printed, making it impossible
-          // to confirm from logs alone whether audio was actually mapped
-          // into the output - 30 comfortably covers both input banners
-          // plus the full output stream mapping. After that, only
-          // connection/error-relevant lines are logged, so the constant
-          // frame=/fps= progress spam doesn't flood the log.
-          if (startupLinesLogged < 30) {
+          // Unconditionally surface the first ~30 *meaningful* startup
+          // lines regardless of keyword match - this is FFmpeg's startup
+          // banner (input/output stream mapping for BOTH the video and
+          // audio tracks, codec negotiation, the "Opening '<dest>' for
+          // writing" / "Output #0, flv, to '<dest>'" lines), which confirm
+          // whether it actually attempted and completed the RTMP publish
+          // handshake at all - the single most important thing to be able
+          // to see when diagnosing "is YouTube actually receiving this".
+          // The repeated "[swscaler] deprecated pixel format used" warning
+          // (one per resize/scale call, effectively unbounded) was
+          // discovered eating the entire budget before FFmpeg ever reached
+          // the Output section, making the connection status unobservable
+          // from logs. Excluded from the budget (and from logging at all,
+          // even after the cap - it's cosmetic/harmless) so the cap is
+          // reserved for lines that actually help answer "did this
+          // connect". After the cap, only connection/error-relevant lines
+          // are logged, so the constant frame=/fps= progress spam doesn't
+          // flood the log.
+          const isSwscalerNoise = line.includes("deprecated pixel format used");
+          if (isSwscalerNoise) {
+            // no-op: never counted, never logged, even post-cap.
+          } else if (startupLinesLogged < 30) {
             startupLinesLogged += 1;
             console.log(`[VIDEO_ENGINE] FFmpeg RTMP (startup): ${redactStreamSecrets(line)}`);
           } else if (RTMP_STATUS_LINE_PATTERN.test(line)) {
