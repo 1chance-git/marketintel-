@@ -210,22 +210,28 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
         return;
       }
 
-      // Broadcasts already deferred to (unreachable via API) auto-start are
-      // excluded here too - otherwise a stuck old broadcast staying bound
-      // to the same reusable stream would keep getting found first forever,
-      // and a freshly created replacement broadcast would never get a turn.
-      const candidate = bound.find((b) =>
+      // Bug fixed here (caught in review before this shipped further): a
+      // deferred/stuck broadcast (enableAutoStart=true, unreachable via the
+      // API) still occupies the stream as a bound "ready"/"testing" entry -
+      // if it were excluded from *both* this "does anything need a turn"
+      // check AND the create-new check below, every tick would see "no
+      // candidate" and create ANOTHER new broadcast on top of the stuck one,
+      // forever, at 60s intervals - runaway broadcast creation and rapid
+      // quota exhaustion (insert+bind cost ~100 quota units per attempt).
+      // So: first check whether ANYTHING not-live is bound at all (stuck
+      // broadcasts included) - only create a new one if truly nothing is
+      // occupying the stream. Only *after* that do we separately exclude
+      // deferred ones when picking what to actively transition.
+      const anyBoundPending = bound.some((b) =>
         !alreadyLive.has(b.id) &&
-        !deferredToAutoStart.has(b.id) &&
         (b.status?.lifeCycleStatus === "ready" || b.status?.lifeCycleStatus === "testing")
       );
 
-      if (!candidate) {
-        // No broadcast at all is bound, publishable, and not a lost cause -
-        // and we already confirmed above nothing is live either - so
-        // there's nothing for our healthy RTMP feed to publish to. Create
-        // one from scratch rather than waiting indefinitely for a human to
-        // make one in Studio.
+      if (!anyBoundPending) {
+        // Nothing at all is bound and pending, and nothing is live either -
+        // there's genuinely nothing for our healthy RTMP feed to publish
+        // to. Create one from scratch rather than waiting indefinitely for
+        // a human to make one in Studio.
         if (Date.now() - lastCreateAttemptAt < CREATE_COOLDOWN_MS) {
           return;
         }
@@ -238,6 +244,20 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
         console.log(`[YOUTUBE_PUBLISH] No publishable broadcast found - creating a fresh one bound to stream ${streamId}`);
         const newBroadcastId = await createFreshBroadcast(accessToken, streamId);
         console.log(`[YOUTUBE_PUBLISH] Created and bound broadcast ${newBroadcastId} - will transition it to live on a later tick`);
+        return;
+      }
+
+      const candidate = bound.find((b) =>
+        !alreadyLive.has(b.id) &&
+        !deferredToAutoStart.has(b.id) &&
+        (b.status?.lifeCycleStatus === "ready" || b.status?.lifeCycleStatus === "testing")
+      );
+
+      if (!candidate) {
+        // Everything currently bound and pending is a known lost cause
+        // (already logged about below on the tick it was first seen) -
+        // nothing new to do until either it resolves itself or a fresh
+        // broadcast created above gets a turn.
         return;
       }
 
