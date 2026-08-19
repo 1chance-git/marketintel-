@@ -81,12 +81,18 @@ async function findPublishableBroadcast(accessToken) {
 // and ready->live transition attempt was rejected 403 "Invalid transition").
 // Turn it off so our explicit transition calls are the only thing driving
 // the broadcast's lifecycle.
-async function disableAutoStart(accessToken, broadcastId) {
+async function disableAutoStart(accessToken, broadcastId, contentDetails) {
   const url = `${API_BASE}/liveBroadcasts?part=contentDetails`;
   const res = await fetch(url, {
     method: "PUT",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ id: broadcastId, contentDetails: { enableAutoStart: false } }),
+    // YouTube's update endpoint requires enableMonitorStream (nested inside
+    // monitorStream) to be present in the body even though we're only
+    // changing enableAutoStart - verified against production: omitting it
+    // returned 400 "The field enableMonitorStream is required". Pass through
+    // the broadcast's existing contentDetails and override just the one
+    // field, rather than trying to guess the full set of required fields.
+    body: JSON.stringify({ id: broadcastId, contentDetails: { ...contentDetails, enableAutoStart: false } }),
   });
   if (!res.ok) {
     throw new Error(`liveBroadcasts.update(disableAutoStart) failed: ${res.status} ${await res.text()}`);
@@ -131,7 +137,7 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
       }
       if (broadcast.contentDetails?.enableAutoStart) {
         console.log(`[YOUTUBE_PUBLISH] Broadcast ${broadcast.id} has enableAutoStart=true, which conflicts with our own transition calls - disabling it`);
-        await disableAutoStart(accessToken, broadcast.id);
+        await disableAutoStart(accessToken, broadcast.id, broadcast.contentDetails);
       }
       // YouTube only allows ready -> testing -> live, not ready -> live
       // directly (verified against production: a direct ready->live call
