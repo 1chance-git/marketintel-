@@ -313,7 +313,19 @@ function spawnFfmpeg({ destination, mode }) {
     "-maxrate", "2500k",
     "-minrate", "2500k",
     "-bufsize", "5000k",
-    "-x264-params", "nal-hrd=cbr:force-cfr=1",
+    // ultrafast's internal defaults (cabac=0, bframes=0) silently force
+    // libx264 into Constrained Baseline profile even with -profile:v main
+    // explicitly set - verified locally (ffmpeg startup log showed
+    // "profile Constrained Baseline" despite -profile:v main). YouTube
+    // Live prefers Main/High profile; Constrained Baseline appears to be
+    // the cause of broadcasts getting stuck in "Preparing stream" and
+    // never reaching a healthy ingest state. Forcing cabac=1 in
+    // -x264-params overrides ultrafast's default and produces genuine
+    // Main profile (verified locally: startup log then showed "profile
+    // Main"), at negligible measured CPU cost - well within the 8 vCPU
+    // headroom this container now has.
+    "-profile:v", "main",
+    "-x264-params", "nal-hrd=cbr:force-cfr=1:cabac=1",
     "-g", String(CAPTURE_FPS * 2),
     "-keyint_min", String(CAPTURE_FPS),
   ];
@@ -519,6 +531,23 @@ export class VideoEngine {
       ffmpegReady = false;
       console.error(`[VIDEO_ENGINE] FFmpeg process error: ${err.message}`);
       this.shutdown(1);
+    });
+
+    // The process-level "error" event above does NOT cover errors on the
+    // stdin stream itself (a separate EventEmitter) - if FFmpeg dies or
+    // its stdin pipe closes out from under Node while encodeTick() is
+    // mid-write (e.g. FFmpeg OOM-killed, segfaults, or exits between
+    // writes), the write fails asynchronously with EPIPE and the stream
+    // emits its own "error" event. With no listener for it, that's a
+    // Node fatal-error path - an uncaught exception that crashes the
+    // whole process (taking down the co-located Supabase poller too in
+    // --live mode) and skips the graceful finishCapture()/shutdown()
+    // path entirely, leaking the Puppeteer browser and HTTP server.
+    // Route it into the same graceful path encodeTick()'s own try/catch
+    // already uses for synchronous write failures.
+    this.ffmpeg.stdin.on("error", (err) => {
+      console.error(`[VIDEO_ENGINE] FFmpeg stdin error: ${err.message}`);
+      this.finishCapture();
     });
 
     // FFmpeg's stderr is where RTMP connection status/errors show up

@@ -494,37 +494,6 @@
     letter-spacing: 0.02em;
   }
 
-  .signal-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    width: 100%;
-    height: 100%;
-    max-height: 100%;
-    overflow-y: auto;
-    font-size: 11px;
-    line-height: 1.4;
-  }
-
-  .signal-list li {
-    padding: 6px 0;
-    border-bottom: 1px solid #1a1a1a;
-    color: #cfcfcf;
-    text-align: left;
-    word-break: break-word;
-    letter-spacing: 0.01em;
-  }
-
-  .signal-list li::before {
-    content: "\2022";
-    color: #3a3a3a;
-    margin-right: 6px;
-  }
-
-  .signal-list li:last-child {
-    border-bottom: none;
-  }
-
   /* ---------- Terminal-style intelligence rows ---------- */
   .term-body {
     display: flex;
@@ -910,7 +879,7 @@
           <span class="card-title-label"><span class="title-icon" aria-hidden="true">&#128221;</span>Market Description</span>
           <span class="card-updated" id="description-updated"></span>
         </div>
-        <div class="card-body desc-body" id="description-body">
+        <div class="card-body desc-body">
           <p class="desc-text" id="description-text">Awaiting sufficient market intelligence.</p>
         </div>
       </div>
