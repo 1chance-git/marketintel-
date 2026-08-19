@@ -4,6 +4,7 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import puppeteer from "puppeteer";
 import { fetchLatestGrokSignal } from "./supabase_client.js";
+import { startAutoPublish } from "./youtube_publisher.js";
 
 const POLL_INTERVAL_MS = 30_000;
 const OUTPUT_PATH = path.resolve("./grok_data.json");
@@ -854,6 +855,8 @@ if (isMainModule()) {
 
     const engine = new StreamEngine();
     engine.start();
+
+    startAutoPublish();
 
     const videoEngine = new VideoEngine({ durationMs: null });
 
