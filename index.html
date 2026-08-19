@@ -590,6 +590,42 @@
     letter-spacing: 0.04em;
   }
 
+  /* DIRECTION row stacks label/value on top of a small positional meter
+     underneath, instead of the default single-line label+value row. */
+  .term-rows li.direction-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+  }
+
+  .direction-row-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .sentiment-meter {
+    display: flex;
+    gap: 3px;
+    height: 4px;
+    width: 100%;
+  }
+
+  .sentiment-meter-seg {
+    flex: 1;
+    height: 100%;
+    background: #232323;
+    border-radius: 1px;
+  }
+
+  .sentiment-meter-seg.seg-bull { background: #00ff00; }
+  .sentiment-meter-seg.seg-bear { background: #ff3b30; }
+  .sentiment-meter-seg.seg-mixed { background: #d4b34a; }
+  .sentiment-meter-seg.seg-neutral { background: #8a8a8a; }
+
   /* ---------- Rotating intelligence viewport ---------- */
   /* One stable card cycles through 5 intelligence categories instead of
      showing all Grok text simultaneously — the title label and body swap
@@ -1793,6 +1829,40 @@
     // then lists the underlying sentiment lines below it as supporting
     // detail — so the section reads as one clear state rather than a
     // pile of paragraphs, without hiding the real Grok text it's based on.
+    // Positional visualization of the same 4-state classifyDirection()
+    // result already driving the DIRECTION text/color - not a new score
+    // or fabricated granularity. Only ever lights exactly one of 3 real
+    // positions (bearish/center/bullish); MIXED is shown distinctly from
+    // NEUTRAL (spanning both sides of center) since it's a genuinely
+    // different, already-computed case (both up/down words present vs.
+    // neither), not invented.
+    const SENTIMENT_METER_PATTERNS = {
+      BULLISH: [0, 0, 0, 1, 1],
+      BEARISH: [1, 1, 0, 0, 0],
+      MIXED: [0, 1, 1, 1, 0],
+      NEUTRAL: [0, 0, 1, 0, 0],
+    };
+    const SENTIMENT_METER_TONE_CLASS = {
+      BULLISH: "seg-bull",
+      BEARISH: "seg-bear",
+      MIXED: "seg-mixed",
+      NEUTRAL: "seg-neutral",
+    };
+
+    function buildSentimentMeter(direction) {
+      const pattern = SENTIMENT_METER_PATTERNS[direction] || SENTIMENT_METER_PATTERNS.NEUTRAL;
+      const toneClass = SENTIMENT_METER_TONE_CLASS[direction] || SENTIMENT_METER_TONE_CLASS.NEUTRAL;
+      const wrap = document.createElement("div");
+      wrap.className = "sentiment-meter";
+      wrap.setAttribute("aria-hidden", "true");
+      pattern.forEach((lit) => {
+        const seg = document.createElement("span");
+        seg.className = lit ? `sentiment-meter-seg ${toneClass}` : "sentiment-meter-seg";
+        wrap.appendChild(seg);
+      });
+      return wrap;
+    }
+
     function renderSentimentBlock(listEl, items) {
       listEl.textContent = "";
       const fragment = document.createDocumentFragment();
@@ -1800,10 +1870,15 @@
       if (items.length) {
         const direction = classifyDirection(items.join(" "));
         const li = document.createElement("li");
+        li.className = "direction-row";
+        const topRow = document.createElement("div");
+        topRow.className = "direction-row-top";
         const labelSpan = makeRowLabelSpan("DIRECTION");
         const valueSpan = makeRowValueSpan(direction, directionTone(direction), "term-direction-value");
-        li.appendChild(labelSpan);
-        li.appendChild(valueSpan);
+        topRow.appendChild(labelSpan);
+        topRow.appendChild(valueSpan);
+        li.appendChild(topRow);
+        li.appendChild(buildSentimentMeter(direction));
         fragment.appendChild(li);
       }
 
