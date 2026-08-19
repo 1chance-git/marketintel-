@@ -174,24 +174,32 @@ function resolveYoutubeLiveUrlSource() {
   console.log(`[VIDEO_ENGINE] Stream_URL shape: ${describeShape(streamUrl)}`);
   console.log(`[VIDEO_ENGINE] Stream_Key shape: ${describeShape(streamKey)}`);
 
+  // YOUTUBE_LIVE_URL is preferred when it's actually usable, but a
+  // malformed value there (e.g. an unresolved Railway `${{...}}`
+  // template, stray whitespace, a typo) must NOT short-circuit past the
+  // Stream_URL+Stream_Key fallback pair - that fallback exists precisely
+  // to cover the case where YOUTUBE_LIVE_URL can't be trusted. Track
+  // *why* it was rejected so the final "none" reason can still mention
+  // it if the fallback pair isn't usable either.
+  let directRejectionReason = null;
   if (direct) {
     if (direct.startsWith("rtmp://")) {
       return { url: direct, source: "YOUTUBE_LIVE_URL" };
     }
-    return { url: null, source: "none (YOUTUBE_LIVE_URL set but not rtmp://)" };
+    directRejectionReason = "YOUTUBE_LIVE_URL set but not rtmp://";
   }
 
   if (streamUrl && streamKey) {
     if (streamUrl.startsWith("rtmp://")) {
       return { url: `${streamUrl.replace(/\/+$/, "")}/${streamKey}`, source: "Stream_URL+Stream_Key" };
     }
-    return { url: null, source: "none (Stream_URL set but not rtmp://)" };
+    return { url: null, source: `none (${directRejectionReason ? `${directRejectionReason}; ` : ""}Stream_URL set but not rtmp://)` };
   }
   if (streamUrl || streamKey) {
-    return { url: null, source: `none (only ${streamUrl ? "Stream_URL" : "Stream_Key"} set)` };
+    return { url: null, source: `none (${directRejectionReason ? `${directRejectionReason}; ` : ""}only ${streamUrl ? "Stream_URL" : "Stream_Key"} set)` };
   }
 
-  return { url: null, source: "none (nothing set)" };
+  return { url: null, source: `none (${directRejectionReason || "nothing set"})` };
 }
 
 const { url: YOUTUBE_LIVE_URL, source: YOUTUBE_LIVE_URL_SOURCE } = resolveYoutubeLiveUrlSource();
