@@ -542,7 +542,7 @@ export class VideoEngine {
           stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
           recentStderrLines.push(line);
           if (recentStderrLines.length > 20) recentStderrLines.shift();
-          // Unconditionally surface the first ~30 *meaningful* startup
+          // Unconditionally surface the first ~45 *meaningful* startup
           // lines regardless of keyword match - this is FFmpeg's startup
           // banner (input/output stream mapping for BOTH the video and
           // audio tracks, codec negotiation, the "Opening '<dest>' for
@@ -557,13 +557,20 @@ export class VideoEngine {
           // from logs. Excluded from the budget (and from logging at all,
           // even after the cap - it's cosmetic/harmless) so the cap is
           // reserved for lines that actually help answer "did this
-          // connect". After the cap, only connection/error-relevant lines
-          // are logged, so the constant frame=/fps= progress spam doesn't
-          // flood the log.
+          // connect". 30 was still not enough - observed logs cut off
+          // right after the *video* output stream's negotiated bitrate
+          // line ("Stream #0:0: Video: h264 ... 2500 kb/s") and never
+          // reached the corresponding *audio* output stream line
+          // ("Stream #0:1: Audio: aac ... kb/s"), which is exactly the
+          // one line that would confirm the actual negotiated AAC output
+          // bitrate rather than just the fact that audio got mapped.
+          // Raised to 45 for headroom. After the cap, only connection/
+          // error-relevant lines are logged, so the constant frame=/fps=
+          // progress spam doesn't flood the log.
           const isSwscalerNoise = line.includes("deprecated pixel format used");
           if (isSwscalerNoise) {
             // no-op: never counted, never logged, even post-cap.
-          } else if (startupLinesLogged < 30) {
+          } else if (startupLinesLogged < 45) {
             startupLinesLogged += 1;
             console.log(`[VIDEO_ENGINE] FFmpeg RTMP (startup): ${redactStreamSecrets(line)}`);
           } else if (RTMP_STATUS_LINE_PATTERN.test(line)) {
