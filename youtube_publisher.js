@@ -79,10 +79,9 @@ async function getAccessToken({ clientId, clientSecret, refreshToken }) {
   return cachedAccessToken;
 }
 
-// A broadcast is publishable once it has a bound stream (i.e. it's actually
-// wired to receive our RTMP feed) and its lifecycle is "ready" or "testing" -
-// the two states YouTube allows transitioning to "live" from.
-async function findPublishableBroadcast(accessToken) {
+// Lists all of the account's broadcasts (mine=true) - callers filter this
+// for whatever lifecycle state they care about.
+async function listMyBroadcasts(accessToken) {
   // mine and broadcastStatus are mutually exclusive params on this endpoint
   // (YouTube API rejects the combination with "Incompatible parameters" -
   // verified against production) - mine=true alone returns broadcasts across
@@ -93,11 +92,7 @@ async function findPublishableBroadcast(accessToken) {
     throw new Error(`liveBroadcasts.list failed: ${res.status} ${await res.text()}`);
   }
   const data = await res.json();
-  const items = data.items || [];
-  return items.find((b) =>
-    b.contentDetails?.boundStreamId &&
-    (b.status?.lifeCycleStatus === "ready" || b.status?.lifeCycleStatus === "testing")
-  ) || null;
+  return data.items || [];
 }
 
 async function transitionBroadcast(accessToken, broadcastId, targetStatus) {
@@ -107,6 +102,63 @@ async function transitionBroadcast(accessToken, broadcastId, targetStatus) {
     throw new Error(`liveBroadcasts.transition(${targetStatus}) failed: ${res.status} ${await res.text()}`);
   }
   return res.json();
+}
+
+// Finds the account's reusable live stream (the "Default stream key" -
+// same RTMP destination Railway's YOUTUBE_LIVE_URL already points at, so
+// creating a new broadcast here never requires touching that env var).
+async function findExistingStreamId(accessToken) {
+  const url = `${API_BASE}/liveStreams?part=id&mine=true&maxResults=1`;
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) {
+    throw new Error(`liveStreams.list failed: ${res.status} ${await res.text()}`);
+  }
+  const data = await res.json();
+  return data.items?.[0]?.id || null;
+}
+
+// Creates a fresh broadcast from scratch and binds it to the existing
+// stream, instead of trying to keep resuscitating a broadcast whose state
+// was left inconsistent by an abrupt encoder disconnect (verified against
+// production: a broadcast that straddled a Railway outage never accepted
+// any transition, direct or via testing, and never auto-started even after
+// several minutes of a genuinely healthy, uninterrupted connection).
+// enableMonitorStream and enableAutoStart are both explicitly off so this
+// broadcast's lifecycle is driven entirely by our own transition calls -
+// ready -> live directly, no testing hop needed, and no auto-start racing
+// against us.
+async function createFreshBroadcast(accessToken, streamId) {
+  const insertRes = await fetchWithTimeout(`${API_BASE}/liveBroadcasts?part=snippet,status,contentDetails`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      snippet: {
+        title: "LIVE Crypto Market Intelligence | BTC, ETH, SOL & XRP",
+        scheduledStartTime: new Date().toISOString(),
+      },
+      status: { privacyStatus: "public", selfDeclaredMadeForKids: false },
+      contentDetails: {
+        enableAutoStart: false,
+        enableAutoStop: false,
+        enableMonitorStream: false,
+        enableDvr: true,
+        recordFromStart: true,
+      },
+    }),
+  });
+  if (!insertRes.ok) {
+    throw new Error(`liveBroadcasts.insert failed: ${insertRes.status} ${await insertRes.text()}`);
+  }
+  const broadcast = await insertRes.json();
+
+  const bindRes = await fetchWithTimeout(`${API_BASE}/liveBroadcasts/bind?id=${encodeURIComponent(broadcast.id)}&streamId=${encodeURIComponent(streamId)}&part=id,contentDetails`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!bindRes.ok) {
+    throw new Error(`liveBroadcasts.bind failed: ${bindRes.status} ${await bindRes.text()}`);
+  }
+  return broadcast.id;
 }
 
 // Starts a background poller that automatically transitions any bound,
@@ -139,38 +191,87 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
     set.add(id);
   };
 
+  // Guards against hammering liveBroadcasts.insert every 20s if broadcast
+  // creation itself is somehow failing repeatedly (e.g. quota, a bad
+  // streamId) - one attempt per minute is plenty for something that should
+  // normally succeed on the first try.
+  const CREATE_COOLDOWN_MS = 60_000;
+  let lastCreateAttemptAt = 0;
+
   const tick = async () => {
     try {
       const accessToken = await getAccessToken({ clientId, clientSecret, refreshToken });
-      const broadcast = await findPublishableBroadcast(accessToken);
-      if (!broadcast || alreadyLive.has(broadcast.id)) {
+      const broadcasts = await listMyBroadcasts(accessToken);
+      const bound = broadcasts.filter((b) => b.contentDetails?.boundStreamId);
+
+      const liveOne = bound.find((b) => b.status?.lifeCycleStatus === "live");
+      if (liveOne) {
+        trackBounded(alreadyLive, liveOne.id);
         return;
       }
-      if (broadcast.contentDetails?.enableAutoStart) {
+
+      // Broadcasts already deferred to (unreachable via API) auto-start are
+      // excluded here too - otherwise a stuck old broadcast staying bound
+      // to the same reusable stream would keep getting found first forever,
+      // and a freshly created replacement broadcast would never get a turn.
+      const candidate = bound.find((b) =>
+        !alreadyLive.has(b.id) &&
+        !deferredToAutoStart.has(b.id) &&
+        (b.status?.lifeCycleStatus === "ready" || b.status?.lifeCycleStatus === "testing")
+      );
+
+      if (!candidate) {
+        // No broadcast at all is bound, publishable, and not a lost cause -
+        // and we already confirmed above nothing is live either - so
+        // there's nothing for our healthy RTMP feed to publish to. Create
+        // one from scratch rather than waiting indefinitely for a human to
+        // make one in Studio.
+        if (Date.now() - lastCreateAttemptAt < CREATE_COOLDOWN_MS) {
+          return;
+        }
+        lastCreateAttemptAt = Date.now();
+        const streamId = await findExistingStreamId(accessToken);
+        if (!streamId) {
+          console.error("[YOUTUBE_PUBLISH] No existing live stream found on this account to bind a new broadcast to");
+          return;
+        }
+        console.log(`[YOUTUBE_PUBLISH] No publishable broadcast found - creating a fresh one bound to stream ${streamId}`);
+        const newBroadcastId = await createFreshBroadcast(accessToken, streamId);
+        console.log(`[YOUTUBE_PUBLISH] Created and bound broadcast ${newBroadcastId} - will transition it to live on a later tick`);
+        return;
+      }
+
+      if (candidate.contentDetails?.enableAutoStart) {
         // Verified against production: YouTube rejects both an API
         // transition call on such a broadcast (403 "Invalid transition")
         // and turning enableAutoStart off after the broadcast has started
         // receiving a stream (403 "enableAutoStartModificationNotAllowed").
         // Nothing safe to do here except wait for YouTube's own auto-start.
-        if (!deferredToAutoStart.has(broadcast.id)) {
-          trackBounded(deferredToAutoStart, broadcast.id);
-          console.log(`[YOUTUBE_PUBLISH] Broadcast ${broadcast.id} has enableAutoStart=true, which YouTube won't let us override or transition around via the API - deferring to YouTube's own auto-start (needs a sustained, uninterrupted healthy connection to trigger)`);
+        // (Broadcasts this module creates itself always have
+        // enableAutoStart=false, so this only applies to broadcasts created
+        // outside of this code, e.g. via Studio.)
+        if (!deferredToAutoStart.has(candidate.id)) {
+          trackBounded(deferredToAutoStart, candidate.id);
+          console.log(`[YOUTUBE_PUBLISH] Broadcast ${candidate.id} has enableAutoStart=true, which YouTube won't let us override or transition around via the API - deferring to YouTube's own auto-start (needs a sustained, uninterrupted healthy connection to trigger)`);
         }
         return;
       }
+
       // YouTube only allows ready -> testing -> live, not ready -> live
-      // directly (verified against production: a direct ready->live call
-      // was rejected with 403 "Invalid transition"/invalidTransition). So a
-      // broadcast in "ready" needs an intermediate hop to "testing" first;
-      // the next tick will find it in "testing" and finish the hop to
-      // "live".
-      const targetStatus = broadcast.status.lifeCycleStatus === "ready" ? "testing" : "live";
-      console.log(`[YOUTUBE_PUBLISH] Found broadcast ${broadcast.id} in lifeCycleStatus=${broadcast.status.lifeCycleStatus} with a bound stream - transitioning to ${targetStatus}`);
-      const result = await transitionBroadcast(accessToken, broadcast.id, targetStatus);
+      // directly, UNLESS the broadcast has enableMonitorStream=false (as
+      // broadcasts created by createFreshBroadcast above always do), in
+      // which case ready -> live works directly. For a "ready" broadcast
+      // with monitoring enabled (e.g. one created manually via Studio,
+      // which defaults it on), hop through "testing" first - the next poll
+      // tick will find it there and finish the hop to "live".
+      const needsTestingHop = candidate.status.lifeCycleStatus === "ready" && candidate.contentDetails?.enableMonitorStream !== false;
+      const targetStatus = needsTestingHop ? "testing" : "live";
+      console.log(`[YOUTUBE_PUBLISH] Found broadcast ${candidate.id} in lifeCycleStatus=${candidate.status.lifeCycleStatus} with a bound stream - transitioning to ${targetStatus}`);
+      const result = await transitionBroadcast(accessToken, candidate.id, targetStatus);
       if (targetStatus === "live") {
-        trackBounded(alreadyLive, broadcast.id);
+        trackBounded(alreadyLive, candidate.id);
       }
-      console.log(`[YOUTUBE_PUBLISH] Transition succeeded: broadcast=${broadcast.id} lifeCycleStatus=${result.status?.lifeCycleStatus}`);
+      console.log(`[YOUTUBE_PUBLISH] Transition succeeded: broadcast=${candidate.id} lifeCycleStatus=${result.status?.lifeCycleStatus}`);
     } catch (err) {
       // Transient failures (stream health not yet good enough for YouTube to
       // accept the transition, a token refresh hiccup, etc.) are expected and
