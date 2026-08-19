@@ -458,6 +458,14 @@
     opacity: 0.65;
   }
 
+  /* Smaller variant for per-row icons (FEAR/GREED, REGULATION, DIRECTION,
+     etc.) so they sit comfortably inside the tighter term-row-label width
+     budget instead of crowding the label text. */
+  .title-icon.row-icon {
+    font-size: 9px;
+    margin-right: 3px;
+  }
+
   .card-updated {
     font-size: 9px;
     color: #5a5a5a;
@@ -1661,6 +1669,55 @@
     // never depends on how much data a given signal happens to contain.
     const MAX_ROWS_PER_SECTION = 4;
 
+    // Small per-row icons, keyed by exact canonical row label - only the
+    // fixed/known label strings this codebase itself generates (Macro
+    // Pulse's 4 canonical buckets, the narrative-breakdown slot names,
+    // the sentiment/what-now readout labels). Deliberately NOT applied to
+    // arbitrary shortened labels derived from raw Grok text (e.g. ETF row
+    // labels), since guessing an icon for unpredictable free text would
+    // risk a mismatched/misleading glyph - a row with no matching entry
+    // here just gets no icon, which is always safe.
+    const ROW_ICONS = {
+      "FEAR/GREED": "\u{1F321}\u{FE0F}", // thermometer
+      "REGULATION": "\u{2696}\u{FE0F}", // balance scale
+      "LIQUIDITY": "\u{1F4A7}", // droplet
+      "VOLUME": "\u{1F4F6}", // signal bars
+      "TOP NARRATIVE": "\u{1F3AF}", // target
+      "EMERGING THEME": "\u{1F331}", // seedling
+      "MARKET TALK": "\u{1F4AC}", // speech balloon
+      "DIRECTION": "\u{1F9ED}", // compass
+      "TOP SIGNAL": "\u{1F4E1}", // satellite antenna
+      "OVERALL BIAS": "\u{2696}\u{FE0F}", // balance scale
+    };
+
+    // Small directional glyphs matching the same up/down/flat tone that
+    // already drives the existing green/red coloring (classifyTone/
+    // directionTone) - purely a visual echo of a value already being
+    // computed, not a new signal.
+    const TONE_GLYPH = { up: "▲ ", down: "▼ " };
+
+    function makeRowLabelSpan(text) {
+      const span = document.createElement("span");
+      span.className = "term-row-label";
+      const icon = ROW_ICONS[text];
+      if (icon) {
+        const iconSpan = document.createElement("span");
+        iconSpan.className = "title-icon row-icon";
+        iconSpan.setAttribute("aria-hidden", "true");
+        iconSpan.textContent = icon;
+        span.appendChild(iconSpan);
+      }
+      span.appendChild(document.createTextNode(text));
+      return span;
+    }
+
+    function makeRowValueSpan(text, tone, extraClass) {
+      const span = document.createElement("span");
+      span.className = `term-row-value term-tone-${tone}${extraClass ? ` ${extraClass}` : ""}`;
+      span.textContent = (TONE_GLYPH[tone] || "") + text;
+      return span;
+    }
+
     function renderRows(listEl, items) {
       listEl.textContent = "";
       const fragment = document.createDocumentFragment();
@@ -1669,13 +1726,8 @@
         const { label, value } = splitLabelValue(raw);
         const li = document.createElement("li");
 
-        const labelSpan = document.createElement("span");
-        labelSpan.className = "term-row-label";
-        labelSpan.textContent = label ? shortenLabel(label) : "—";
-
-        const valueSpan = document.createElement("span");
-        valueSpan.className = `term-row-value term-tone-${classifyTone(raw)}`;
-        valueSpan.textContent = (label ? value : raw).toUpperCase();
+        const labelSpan = makeRowLabelSpan(label ? shortenLabel(label) : "—");
+        const valueSpan = makeRowValueSpan((label ? value : raw).toUpperCase(), classifyTone(raw));
 
         li.appendChild(labelSpan);
         li.appendChild(valueSpan);
@@ -1699,9 +1751,7 @@
       items.slice(0, NARRATIVE_SLOT_LABELS.length).forEach((raw, i) => {
         const li = document.createElement("li");
 
-        const labelSpan = document.createElement("span");
-        labelSpan.className = "term-row-label";
-        labelSpan.textContent = NARRATIVE_SLOT_LABELS[i];
+        const labelSpan = makeRowLabelSpan(NARRATIVE_SLOT_LABELS[i]);
 
         const valueSpan = document.createElement("span");
         valueSpan.className = "term-row-value";
@@ -1727,13 +1777,8 @@
         const { label, value } = splitLabelValue(raw);
         const li = document.createElement("li");
 
-        const labelSpan = document.createElement("span");
-        labelSpan.className = "term-row-label";
-        labelSpan.textContent = canonicalMacroLabel(label, raw);
-
-        const valueSpan = document.createElement("span");
-        valueSpan.className = `term-row-value term-tone-${classifyTone(raw)}`;
-        valueSpan.textContent = (label ? value : raw).toUpperCase();
+        const labelSpan = makeRowLabelSpan(canonicalMacroLabel(label, raw));
+        const valueSpan = makeRowValueSpan((label ? value : raw).toUpperCase(), classifyTone(raw));
 
         li.appendChild(labelSpan);
         li.appendChild(valueSpan);
@@ -1755,12 +1800,8 @@
       if (items.length) {
         const direction = classifyDirection(items.join(" "));
         const li = document.createElement("li");
-        const labelSpan = document.createElement("span");
-        labelSpan.className = "term-row-label";
-        labelSpan.textContent = "DIRECTION";
-        const valueSpan = document.createElement("span");
-        valueSpan.className = `term-row-value term-direction-value term-tone-${directionTone(direction)}`;
-        valueSpan.textContent = direction;
+        const labelSpan = makeRowLabelSpan("DIRECTION");
+        const valueSpan = makeRowValueSpan(direction, directionTone(direction), "term-direction-value");
         li.appendChild(labelSpan);
         li.appendChild(valueSpan);
         fragment.appendChild(li);
@@ -1769,12 +1810,8 @@
       items.slice(0, MAX_ROWS_PER_SECTION).forEach((raw) => {
         const { label, value } = splitLabelValue(raw);
         const li = document.createElement("li");
-        const labelSpan = document.createElement("span");
-        labelSpan.className = "term-row-label";
-        labelSpan.textContent = label ? shortenLabel(label) : "—";
-        const valueSpan = document.createElement("span");
-        valueSpan.className = `term-row-value term-tone-${classifyTone(raw)}`;
-        valueSpan.textContent = (label ? value : raw).toUpperCase();
+        const labelSpan = makeRowLabelSpan(label ? shortenLabel(label) : "—");
+        const valueSpan = makeRowValueSpan((label ? value : raw).toUpperCase(), classifyTone(raw));
         li.appendChild(labelSpan);
         li.appendChild(valueSpan);
         fragment.appendChild(li);
@@ -1826,12 +1863,8 @@
       const fragment = document.createDocumentFragment();
       rows.forEach((row) => {
         const li = document.createElement("li");
-        const labelSpan = document.createElement("span");
-        labelSpan.className = "term-row-label";
-        labelSpan.textContent = row.label;
-        const valueSpan = document.createElement("span");
-        valueSpan.className = `term-row-value term-tone-${classifyTone(row.raw)}`;
-        valueSpan.textContent = row.value.toUpperCase();
+        const labelSpan = makeRowLabelSpan(row.label);
+        const valueSpan = makeRowValueSpan(row.value.toUpperCase(), classifyTone(row.raw));
         li.appendChild(labelSpan);
         li.appendChild(valueSpan);
         fragment.appendChild(li);
