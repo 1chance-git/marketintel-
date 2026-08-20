@@ -288,6 +288,24 @@ async function captureFrames(frameDir) {
     await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: "networkidle0", timeout: 30_000 });
     await new Promise((r) => setTimeout(r, 1500)); // let live data connections settle, same rationale as VideoEngine.run()
 
+    // Confirmed in production: the flat 1500ms wait above isn't long enough
+    // for the chart's own Kraken WebSocket feed to deliver real OHLC candle
+    // data (separate from the market-board ticker) - a real uploaded clip's
+    // "BTC chart" segment showed an empty chart with "TREND NEUTRAL" /
+    // "VOLUME LOW" placeholders and no candles. #chart-fallback ("Waiting
+    // for live BTC/USD feed...") is hidden via style.display="none" only
+    // once candleData[ticker] actually has candles (see index.html) - wait
+    // on that same signal VideoEngine.run() already uses (via mb-price-BTC)
+    // for the market board, applied here to the chart specifically.
+    await page
+      .waitForFunction(
+        () => document.getElementById("chart-fallback")?.style.display === "none",
+        { timeout: 8_000 }
+      )
+      .catch(() => {
+        console.error("[CLIPPER] BTC chart candle data not confirmed within 8s of page load; capturing anyway");
+      });
+
     const evidence = await readOnScreenEvidence(page);
 
     // showRotatorSlide(0) already runs on page load, matching KEYFRAMES[0]'s
