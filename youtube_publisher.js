@@ -33,6 +33,15 @@
 //   YOUTUBE_OAUTH_REFRESH_TOKEN  - refresh token for an account with access
 //                                  to the channel, scope
 //                                  https://www.googleapis.com/auth/youtube
+//
+// Optional env vars, for the post-upload review-email notification
+// (sendReviewNotification below) - without these, uploadShort() still
+// works, it just skips sending an email:
+//   RESEND_API_KEY    - API key from resend.com
+//   NOTIFICATION_EMAIL - where to send the "review this Short" email
+//   RESEND_FROM_EMAIL  - optional; defaults to Resend's own unverified
+//                        sender address, which works without owning/
+//                        verifying a domain
 // ---------------------------------------------------------------------------
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -186,6 +195,52 @@ function buildShortMetadata({ signal, overlayText }) {
   };
 }
 
+const RESEND_API_URL = "https://api.resend.com/emails";
+
+// Notifies the operator by email once a Short is uploaded so it can be
+// reviewed from a phone without opening YouTube Studio. Purely additive
+// like the OAuth-gated features above: without RESEND_API_KEY and
+// NOTIFICATION_EMAIL both set, this logs once and does nothing. A failure
+// here is never allowed to make the upload itself look like it failed -
+// the video is already live on YouTube (as unlisted) by the time this
+// runs, so this only ever logs and swallows its own errors.
+async function sendReviewNotification({ title, watchUrl }) {
+  const apiKey = process.env.RESEND_API_KEY || null;
+  const toEmail = process.env.NOTIFICATION_EMAIL || null;
+  if (!apiKey || !toEmail) {
+    console.log("[YOUTUBE_PUBLISH] Review email skipped: RESEND_API_KEY/NOTIFICATION_EMAIL not fully configured");
+    return;
+  }
+  const fromEmail = process.env.RESEND_FROM_EMAIL || "MarketIntel Shorts <onboarding@resend.dev>";
+
+  try {
+    const res = await fetchWithTimeout(RESEND_API_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: fromEmail,
+        to: [toEmail],
+        subject: `🚨 REVIEW SHORT: ${title}`,
+        html: `
+          <p>A new unlisted Short just finished uploading and is ready for review.</p>
+          <p style="margin: 24px 0;">
+            <a href="${watchUrl}" style="display: inline-block; padding: 12px 24px; background: #d02a2a; color: #ffffff; font-weight: bold; text-decoration: none; border-radius: 6px;">
+              &#9654; Review on YouTube
+            </a>
+          </p>
+          <p><strong>${watchUrl}</strong></p>
+        `,
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`Resend API failed: ${res.status} ${await res.text()}`);
+    }
+    console.log("[YOUTUBE_PUBLISH] Review email sent");
+  } catch (err) {
+    console.error(`[YOUTUBE_PUBLISH] Review email failed to send: ${err.message}`);
+  }
+}
+
 // Uploads a rendered short-form clip as an unlisted video for manual
 // review before it's ever made public. Uses the multipart/related upload
 // protocol Google's API requires (a JSON metadata part followed by the raw
@@ -218,7 +273,11 @@ export async function uploadShort(videoBuffer, { signal, overlayText }) {
     throw new Error(`videos.insert failed: ${res.status} ${await res.text()}`);
   }
   const result = await res.json();
-  return `https://youtu.be/${result.id}`;
+  const watchUrl = `https://youtu.be/${result.id}`;
+
+  await sendReviewNotification({ title: metadata.snippet.title, watchUrl });
+
+  return watchUrl;
 }
 
 // Starts a background poller that automatically transitions any bound,
