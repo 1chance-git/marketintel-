@@ -874,6 +874,26 @@ if (isMainModule()) {
     });
     engine.start();
 
+    // One-time manual trigger (FORCE_CLIP_NOW=1) to generate a clip from
+    // whatever signal is currently live, bypassing StreamEngine's
+    // hasChanged() dedup - useful for previewing a clip-rendering change
+    // without waiting for a genuinely new Supabase signal to land. Meant
+    // to be set, deployed once, then unset again - not left on, since it
+    // fires unconditionally on every boot while set.
+    if (process.env.FORCE_CLIP_NOW === "1") {
+      console.log("[STREAM_ENGINE] FORCE_CLIP_NOW=1: generating a clip from the current signal immediately");
+      fetchLatestGrokSignal()
+        .then(async (signal) => {
+          if (!signal) {
+            console.error("[STREAM_ENGINE] FORCE_CLIP_NOW: no signal available from Supabase");
+            return;
+          }
+          const { generateAndUploadClip } = await import("./video_clipper.js");
+          await generateAndUploadClip(normalizeSignal(signal));
+        })
+        .catch((err) => console.error(`[STREAM_ENGINE] FORCE_CLIP_NOW failed: ${err.message}`));
+    }
+
     startAutoPublish();
 
     const videoEngine = new VideoEngine({ durationMs: null });
