@@ -1022,6 +1022,17 @@
       wickDownColor: "#ff3b30",
     });
 
+    // Non-visual diagnostic hook, same pattern as __mktRotatorGoTo - lets
+    // an external Puppeteer session (video_clipper.js) read the chart's
+    // actual internal state (candle count already setData()'d onto the
+    // series, container size) instead of only inferring it indirectly.
+    window.__mktChartDebug = () => ({
+      candleCount: candleData.BTC.length,
+      seriesDataCount: candleSeries.data().length,
+      containerWidth: containerEl.clientWidth,
+      containerHeight: containerEl.clientHeight,
+    });
+
     // Market-context overlays - all derived purely from the same Kraken
     // OHLCV candle data already held in candleData[ticker] (Kraken's v2
     // ohlc payload includes volume/vwap per candle alongside OHLC; see

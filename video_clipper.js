@@ -284,6 +284,13 @@ async function captureFrames(frameDir) {
 
   try {
     const page = await browser.newPage();
+    // Forward browser-console output (e.g. index.html's own caught
+    // "[CHART] candleSeries.setData failed" logs) into Railway logs - the
+    // headless page's console is otherwise invisible to us, so a silently
+    // caught chart render error would look identical to "no error at all"
+    // from here.
+    page.on("console", (msg) => console.log(`[CLIPPER PAGE CONSOLE] ${msg.text()}`));
+    page.on("pageerror", (err) => console.error(`[CLIPPER PAGE ERROR] ${err.message}`));
     await page.setViewport({ width: SOURCE_WIDTH, height: SOURCE_HEIGHT });
     await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: "networkidle0", timeout: 30_000 });
     await new Promise((r) => setTimeout(r, 1500)); // let live data connections settle, same rationale as VideoEngine.run()
@@ -305,6 +312,9 @@ async function captureFrames(frameDir) {
       .catch(() => {
         console.error("[CLIPPER] BTC chart candle data not confirmed within 8s of page load; capturing anyway");
       });
+
+    const chartDebug = await page.evaluate(() => window.__mktChartDebug?.() ?? null);
+    console.log(`[CLIPPER] Chart debug at capture time: ${JSON.stringify(chartDebug)}`);
 
     const evidence = await readOnScreenEvidence(page);
 
