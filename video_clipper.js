@@ -78,35 +78,69 @@ function deriveColor(text) {
   return "#FFFFFF";
 }
 
+// Verified against real ffmpeg drawtext output (via the bbox filter) at
+// fontsize=58 on the 1080px-wide canvas: text past ~28-30 uppercase
+// characters overflows the frame horizontally and gets clipped at the
+// edges. 30 chars leaves a safe margin - applied to every beat's final
+// text, regardless of which source built it.
+function truncateForOverlay(text) {
+  const upper = text.toUpperCase();
+  return upper.length > 30 ? `${upper.slice(0, 27)}...` : upper;
+}
+
 // Real signal text, not fabricated copy: same "Label: detail" convention
 // index.html's splitLabelValue() already relies on for these fields - take
-// the detail half, drop an overlong label prefix, truncate for on-screen
-// legibility, and fall back to a neutral (non-claim) line if a field is
-// genuinely empty rather than inventing content.
+// the detail half, drop an overlong label prefix, and fall back to a
+// neutral (non-claim) line if a field is genuinely empty rather than
+// inventing content.
 function deriveLine(items, fallback) {
   const raw = Array.isArray(items) ? items.find((s) => typeof s === "string" && s.trim()) : null;
   if (!raw) return fallback;
   const idx = raw.indexOf(":");
   const text = (idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim();
-  // Verified against real ffmpeg drawtext output (via the bbox filter) at
-  // fontsize=58 on the 1080px-wide canvas: text past ~28-30 uppercase
-  // characters overflows the frame horizontally and gets clipped at the
-  // edges. 30 chars leaves a safe margin.
-  const truncated = text.length > 30 ? `${text.slice(0, 27)}...` : text;
-  return truncated.toUpperCase();
+  return truncateForOverlay(text);
+}
+
+// The BTC-chart and Direction beats used to be an arbitrary truncated line
+// from system_macro/sentiment - often not about BTC's price action at all,
+// and disconnected from what the cropped panel actually showed at that
+// moment. Both are now built from the exact numbers/labels visible
+// on-screen in that frame (see readOnScreenEvidence below), so the caption
+// is always evidence the viewer can see for themselves, not a
+// paraphrase of an unrelated sentence.
+function buildChartLine(evidence) {
+  if (!evidence.btcPrice || evidence.btcPrice === "DATA UNAVAILABLE") return "BTC/USD LIVE CHART";
+  const changeNum = parseFloat(evidence.btcChange);
+  const changeText = Number.isFinite(changeNum)
+    ? `${changeNum >= 0 ? "UP" : "DOWN"} ${Math.abs(changeNum).toFixed(2)}%`
+    : null;
+  const trend = evidence.trend && evidence.trend !== "—" ? evidence.trend.toUpperCase() : null;
+  const parts = ["BTC", changeText, trend ? `· ${trend} TREND` : null].filter(Boolean);
+  return truncateForOverlay(parts.join(" "));
+}
+
+function buildDirectionLine(evidence) {
+  if (!evidence.direction) return "MARKET STATE";
+  return truncateForOverlay(`DIRECTION: ${evidence.direction}`);
 }
 
 // One {text, color} beat per KEYFRAMES panel, in the same order: ETF/
 // Institutional Flow, BTC chart, Narrative Shift, Direction/Market State -
 // also read top-to-bottom as a 4-beat arc (setup -> turning point ->
 // confirmation -> outcome). Color per beat is derived from that beat's own
-// text (deriveColor), not fixed - see the KEYFRAMES comment above.
-function deriveNarrativeArc(signal) {
+// text (deriveColor), not fixed - see the KEYFRAMES comment above. The ETF
+// and Narrative beats still come from the real Grok signal text (already
+// the exact evidence that panel displays); the chart and Direction beats
+// come from readOnScreenEvidence's DOM read instead (see buildChartLine/
+// buildDirectionLine) - both sources are "what's actually shown", just
+// read from different places (Supabase signal vs. rendered DOM), never a
+// generic paraphrase.
+function deriveNarrativeArc(signal, evidence) {
   const lines = [
     deriveLine(signal.etf_flows, "ETF FLOW UPDATE"),
-    deriveLine(signal.system_macro, "MARKET UPDATE"),
+    buildChartLine(evidence),
     deriveLine(signal.x_narratives, "NARRATIVE PULSE"),
-    deriveLine(signal.sentiment, "MARKET STATE"),
+    buildDirectionLine(evidence),
   ];
   return lines.map((text) => ({ text, color: deriveColor(text) }));
 }
@@ -187,6 +221,23 @@ function buildFilterComplex(arc) {
   return [cropStage, scaleStage, padStage, ...drawtextStages].join(",");
 }
 
+// Reads the exact numbers/labels the dashboard itself has already computed
+// and rendered - BTC price/change (market-board ticker), trend (chart
+// header badge), and DIRECTION (Market Sentiment's own classifyDirection()
+// output, term-direction-value - present in the DOM even while that
+// rotator slide is hidden, since ROTATION_SLIDES only toggles the `hidden`
+// attribute, never removes the content). This is what makes buildChartLine/
+// buildDirectionLine "evidence", not invention - it's a direct read of
+// numbers already on screen, not a new computation.
+async function readOnScreenEvidence(page) {
+  return page.evaluate(() => ({
+    btcPrice: document.getElementById("mb-price-BTC")?.textContent?.trim() || null,
+    btcChange: document.getElementById("mb-change-BTC")?.textContent?.trim().replace(/[+%]/g, "") || null,
+    trend: document.getElementById("trend-value")?.textContent?.trim() || null,
+    direction: document.querySelector(".term-direction-value")?.textContent?.trim() || null,
+  }));
+}
+
 async function captureFrames(frameDir) {
   const { server, port } = await startLocalServer(path.resolve("."));
   const browser = await puppeteer.launch({
@@ -199,6 +250,8 @@ async function captureFrames(frameDir) {
     await page.setViewport({ width: SOURCE_WIDTH, height: SOURCE_HEIGHT });
     await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: "networkidle0", timeout: 30_000 });
     await new Promise((r) => setTimeout(r, 1500)); // let live data connections settle, same rationale as VideoEngine.run()
+
+    const evidence = await readOnScreenEvidence(page);
 
     // showRotatorSlide(0) already runs on page load, matching KEYFRAMES[0]'s
     // rotatorSlide - only need to force it for the later keyframes.
@@ -217,6 +270,7 @@ async function captureFrames(frameDir) {
       await page.screenshot({ path: path.join(frameDir, `frame_${frameNum}.jpg`), type: "jpeg", quality: 85 });
       await new Promise((r) => setTimeout(r, 1000 / CLIP_FPS));
     }
+    return evidence;
   } finally {
     await browser.close();
     server.close();
@@ -302,9 +356,9 @@ export async function generateAndUploadClip(signal) {
     }
 
     frameDir = await mkdtemp(path.join(tmpdir(), "clip-frames-"));
-    await captureFrames(frameDir);
+    const evidence = await captureFrames(frameDir);
 
-    const arc = deriveNarrativeArc(signal);
+    const arc = deriveNarrativeArc(signal, evidence);
     const outputPath = path.join(frameDir, "clip.mp4");
     await renderVideo(frameDir, outputPath, arc);
     console.log("[RENDER COMPLETE]");
