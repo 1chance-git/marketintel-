@@ -161,6 +161,66 @@ async function createFreshBroadcast(accessToken, streamId) {
   return broadcast.id;
 }
 
+// Builds title/description/tags from the real signal that triggered the
+// clip - never fixed marketing copy. Falls back to a neutral, non-claim
+// default only when a field is genuinely empty, same rule video_clipper.js
+// uses for the on-screen overlay text.
+function buildShortMetadata({ signal, overlayText }) {
+  const hook = overlayText?.[0] || "Market Update";
+  const title = `${hook} | Live Terminal Intel`.slice(0, 100);
+  const bodyLines = (overlayText || []).slice(0, 3).filter(Boolean);
+  const description = [
+    ...bodyLines,
+    "",
+    `Signal timestamp: ${signal?.timestamp || "unknown"}`,
+    "Live terminal intel - not financial advice.",
+  ].join("\n");
+  return {
+    snippet: {
+      title,
+      description,
+      tags: ["CryptoMarkets", "MarketIntelligence", "LiveTerminal"],
+      categoryId: "28", // Science & Technology
+    },
+    status: { privacyStatus: "unlisted", selfDeclaredMadeForKids: false },
+  };
+}
+
+// Uploads a rendered short-form clip as an unlisted video for manual
+// review before it's ever made public. Uses the multipart/related upload
+// protocol Google's API requires (a JSON metadata part followed by the raw
+// video bytes) - the web-form-style multipart/form-data that fetch's
+// built-in FormData produces is not accepted by this endpoint, so the
+// body is built manually.
+export async function uploadShort(videoBuffer, { signal, overlayText }) {
+  const clientId = process.env.YOUTUBE_OAUTH_CLIENT_ID || null;
+  const clientSecret = process.env.YOUTUBE_OAUTH_CLIENT_SECRET || null;
+  const refreshToken = process.env.YOUTUBE_OAUTH_REFRESH_TOKEN || null;
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error("YOUTUBE_OAUTH_CLIENT_ID/YOUTUBE_OAUTH_CLIENT_SECRET/YOUTUBE_OAUTH_REFRESH_TOKEN not configured");
+  }
+
+  const accessToken = await getAccessToken({ clientId, clientSecret, refreshToken });
+  const metadata = buildShortMetadata({ signal, overlayText });
+
+  const boundary = `yt-upload-${Date.now()}`;
+  const metadataPart = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`;
+  const videoPartHeader = `--${boundary}\r\nContent-Type: video/mp4\r\n\r\n`;
+  const closing = `\r\n--${boundary}--`;
+  const body = Buffer.concat([Buffer.from(metadataPart), Buffer.from(videoPartHeader), videoBuffer, Buffer.from(closing)]);
+
+  const res = await fetch(`${API_BASE}/videos?uploadType=multipart&part=snippet,status`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary=${boundary}` },
+    body,
+  });
+  if (!res.ok) {
+    throw new Error(`videos.insert failed: ${res.status} ${await res.text()}`);
+  }
+  const result = await res.json();
+  return `https://youtu.be/${result.id}`;
+}
+
 // Starts a background poller that automatically transitions any bound,
 // publishable broadcast to "live". Returns the interval timer (or null if
 // disabled) so callers can unref it and let the process exit cleanly.
