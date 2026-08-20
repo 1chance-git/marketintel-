@@ -47,14 +47,21 @@
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const API_BASE = "https://www.googleapis.com/youtube/v3";
 const FETCH_TIMEOUT_MS = 15_000;
+// The videos.insert upload body is a full-length rendered clip, not a JSON
+// API call - a real upload can legitimately take well over 15s on a slow
+// or congested connection, so it needs its own, longer timeout rather than
+// FETCH_TIMEOUT_MS. Still bounded, though: an unbounded fetch here would
+// leave a dangling promise forever if the connection genuinely hangs mid
+// upload (distinct from just being slow).
+const UPLOAD_FETCH_TIMEOUT_MS = 300_000;
 
 // A stalled fetch (network partition, YouTube API hang) would otherwise
 // leave tick() in flight indefinitely, silently pausing all polling for a
 // process meant to run unattended for weeks - every network call in this
 // module goes through this so a hang can't outlast the timeout.
-async function fetchWithTimeout(url, options = {}) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
@@ -165,7 +172,27 @@ async function createFreshBroadcast(accessToken, streamId) {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!bindRes.ok) {
-    throw new Error(`liveBroadcasts.bind failed: ${bindRes.status} ${await bindRes.text()}`);
+    const bindErrorText = await bindRes.text();
+    // A broadcast that's inserted but never bound is invisible to the
+    // "anything bound?" check every other tick does - left alone, it would
+    // sit there forever while the 60s creation cooldown lets a fresh one
+    // get created and potentially abandoned the same way, repeating
+    // indefinitely and burning liveBroadcasts.insert/bind quota (~100 units
+    // per attempt). Delete it rather than leak it. A failure here is logged
+    // but never allowed to replace/mask the original bind error below - the
+    // bind failure is the one callers need to see and react to.
+    try {
+      const deleteRes = await fetchWithTimeout(`${API_BASE}/liveBroadcasts?id=${encodeURIComponent(broadcast.id)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!deleteRes.ok) {
+        console.error(`[YOUTUBE_PUBLISH] Cleanup failed: could not delete orphaned broadcast ${broadcast.id} after a failed bind (${deleteRes.status} ${await deleteRes.text()}) - it will need manual deletion in YouTube Studio`);
+      }
+    } catch (cleanupErr) {
+      console.error(`[YOUTUBE_PUBLISH] Cleanup failed: could not delete orphaned broadcast ${broadcast.id} after a failed bind (${cleanupErr.message}) - it will need manual deletion in YouTube Studio`);
+    }
+    throw new Error(`liveBroadcasts.bind failed: ${bindRes.status} ${bindErrorText}`);
   }
   return broadcast.id;
 }
@@ -264,11 +291,11 @@ export async function uploadShort(videoBuffer, { signal, overlayText }) {
   const closing = `\r\n--${boundary}--`;
   const body = Buffer.concat([Buffer.from(metadataPart), Buffer.from(videoPartHeader), videoBuffer, Buffer.from(closing)]);
 
-  const res = await fetch(`${API_BASE}/videos?uploadType=multipart&part=snippet,status`, {
+  const res = await fetchWithTimeout(`${API_BASE}/videos?uploadType=multipart&part=snippet,status`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary=${boundary}` },
     body,
-  });
+  }, UPLOAD_FETCH_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(`videos.insert failed: ${res.status} ${await res.text()}`);
   }
@@ -317,7 +344,20 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
   const CREATE_COOLDOWN_MS = 60_000;
   let lastCreateAttemptAt = 0;
 
+  // Reentrancy guard: tick() chains several sequential network calls, each
+  // individually capped at 15s via fetchWithTimeout, but the chain as a
+  // whole (token refresh -> list -> maybe create+bind, or list -> transition)
+  // can exceed the 20s setInterval period. Without this, two ticks could run
+  // concurrently and both observe "nothing bound" before either one acts,
+  // both creating a broadcast, or both transitioning the same candidate.
+  let tickInProgress = false;
+
   const tick = async () => {
+    if (tickInProgress) {
+      console.log("[YOUTUBE_PUBLISH] Skipped: previous tick still in progress");
+      return;
+    }
+    tickInProgress = true;
     try {
       const accessToken = await getAccessToken({ clientId, clientSecret, refreshToken });
       const broadcasts = await listMyBroadcasts(accessToken);
@@ -417,6 +457,8 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
       // will self-resolve on a later tick - log and keep polling rather than
       // treating this as fatal.
       console.error(`[YOUTUBE_PUBLISH] ${err.message}`);
+    } finally {
+      tickInProgress = false;
     }
   };
 

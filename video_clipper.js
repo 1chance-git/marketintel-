@@ -61,8 +61,34 @@ function deriveOverlayText(signal) {
   ];
 }
 
+// Inside a single-quoted FFmpeg filter argument, backslash is NOT an
+// escape character in the intuitive sense - `\'` does not reliably embed a
+// literal apostrophe. Verified directly against this container's real
+// ffmpeg (6.1.1) with the actual multi-drawtext filter_complex this module
+// builds: the textbook "close quote, escaped literal quote, reopen quote"
+// technique (`'\''`) - correct in isolation per FFmpeg's own docs - was
+// tried first here and PROVED BROKEN in practice: once a drawtext's `text`
+// value contains that sequence, FFmpeg's option parser desyncs and
+// corrupts every *later* quoted clause in the same filter_complex, most
+// dangerously the enable='between(t,...)' clause on this drawtext and
+// every drawtext after it (they silently stop being time-gated, or their
+// params leak into the rendered text) - exactly the "corrupted filter
+// graph" risk this function exists to prevent, just triggered by the
+// textbook fix instead of the naive one. Plain `\'` alone (no reopen) does
+// at least parse safely (verified: no corruption of later clauses), but
+// silently swallows the apostrophe with no visible trace, so there is no
+// reliable way to make FFmpeg render a literal apostrophe here - dropping
+// it outright is simpler, equally safe, and just as legible on a vertical
+// short's overlay text. Backslash and colon (drawtext's own key/value
+// separator) still need real backslash-escaping. `%` is deliberately NOT
+// escaped here - see buildFilterComplex's `expansion=none`, which disables
+// drawtext's %{...} text_expansion entirely (the actual DoS/expression-
+// evaluation surface) so unescaped `%` is always literal and safe.
 function escapeDrawtext(text) {
-  return text.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'");
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "");
 }
 
 function buildFilterComplex(overlayText) {
@@ -95,7 +121,13 @@ function buildFilterComplex(overlayText) {
 
   const drawtextStages = KEYFRAMES.map((k, i) => {
     const text = escapeDrawtext(overlayText[i]);
-    return `drawtext=fontfile=${FONT_PATH}:text='${text}':fontcolor=white:fontsize=58:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-320:enable='between(t,${k.start},${k.end})'`;
+    // expansion=none turns off drawtext's %{...}/strftime text_expansion
+    // outright, rather than relying on escaping % to survive it - signal
+    // text is untrusted (external Gmail->Supabase bridge), and expansion
+    // is the actual mechanism that would evaluate an expression embedded
+    // in it, not just a display quirk. With it off, a raw `%` is always
+    // literal, so no % escaping is needed (or attempted) in escapeDrawtext.
+    return `drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=white:fontsize=58:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-320:enable='between(t,${k.start},${k.end})'`;
   });
 
   return [cropStage, scaleStage, padStage, ...drawtextStages].join(",");
@@ -161,12 +193,41 @@ function renderVideo(frameDir, outputPath, overlayText) {
   });
 }
 
+// Module-level in-flight guard: onNewSignal in stream_engine.js fires this
+// fire-and-forget on every new Supabase signal with no rate limit of its
+// own, so if signals arrive faster than one full capture+render+upload
+// cycle (30-60s+: ~12s of real-time frame capture, FFmpeg render, network
+// upload), overlapping runs would each spin up their own Chromium+FFmpeg
+// pair competing with the main broadcast's own Puppeteer+FFmpeg for CPU in
+// the same container - this is the exact CPU-contention pattern that
+// caused the earlier production "buffering"/stuck-ingest incident fixed by
+// switching the main broadcast to the "ultrafast" x264 preset (see
+// stream_engine.js's spawnFfmpeg). A module-level flag is enough here since
+// this process only ever runs one generateAndUploadClip at a time by design.
+let clipGenerationInFlight = false;
+
 // Generates a short vertical clip from the given normalized Grok signal
 // (same shape stream_engine.js already writes to grok_data.json) and
 // uploads it to YouTube as an unlisted Short for manual review. Never
 // throws past this function's own logging - a failure here must not take
 // down the caller (the main broadcast pipeline).
 export async function generateAndUploadClip(signal) {
+  if (clipGenerationInFlight) {
+    console.log("[CLIPPER] Skipped: a previous clip generation is still in progress");
+    return null;
+  }
+
+  // Same "log once, no-op" pattern youtube_publisher.js uses for its own
+  // OAuth env vars - checked here, before any Puppeteer/FFmpeg work starts,
+  // so a signal doesn't burn a full capture+render cycle only to have
+  // uploadShort() reject it at the very end because publishing was never
+  // configured.
+  if (!process.env.YOUTUBE_OAUTH_CLIENT_ID || !process.env.YOUTUBE_OAUTH_CLIENT_SECRET || !process.env.YOUTUBE_OAUTH_REFRESH_TOKEN) {
+    console.log("[CLIPPER] Skipped: YOUTUBE_OAUTH_CLIENT_ID/YOUTUBE_OAUTH_CLIENT_SECRET/YOUTUBE_OAUTH_REFRESH_TOKEN not fully configured - nothing to upload the clip to");
+    return null;
+  }
+
+  clipGenerationInFlight = true;
   console.log("[CLIPPER STARTED]");
 
   let frameDir;
@@ -199,5 +260,6 @@ export async function generateAndUploadClip(signal) {
     if (frameDir) {
       await rm(frameDir, { recursive: true, force: true }).catch(() => {});
     }
+    clipGenerationInFlight = false;
   }
 }
