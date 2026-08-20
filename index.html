@@ -1026,12 +1026,43 @@
     // an external Puppeteer session (video_clipper.js) read the chart's
     // actual internal state (candle count already setData()'d onto the
     // series, container size) instead of only inferring it indirectly.
-    window.__mktChartDebug = () => ({
-      candleCount: candleData.BTC.length,
-      seriesDataCount: candleSeries.data().length,
-      containerWidth: containerEl.clientWidth,
-      containerHeight: containerEl.clientHeight,
-    });
+    window.__mktChartDebug = () => {
+      const rect = containerEl.getBoundingClientRect();
+      const canvases = Array.from(containerEl.querySelectorAll("canvas"));
+      // Sample actual painted pixels off the real canvas (same-origin, not
+      // tainted - drawn programmatically by the chart library, not loaded
+      // from an image) to tell apart "nothing painted" from "painted, but
+      // our crop rectangle doesn't line up with where it actually is" -
+      // candleCount/seriesDataCount alone can't distinguish those two.
+      let nonBlackPixels = 0;
+      let totalPixels = 0;
+      let pixelSampleError = null;
+      try {
+        for (const canvas of canvases) {
+          if (!canvas.width || !canvas.height) continue;
+          const ctx = canvas.getContext("2d");
+          const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          totalPixels += canvas.width * canvas.height;
+          for (let i = 0; i < data.length; i += 4) {
+            if (data[i] > 10 || data[i + 1] > 10 || data[i + 2] > 10) nonBlackPixels++;
+          }
+        }
+      } catch (err) {
+        pixelSampleError = err.message;
+      }
+      return {
+        candleCount: candleData.BTC.length,
+        seriesDataCount: candleSeries.data().length,
+        containerWidth: containerEl.clientWidth,
+        containerHeight: containerEl.clientHeight,
+        containerRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        canvasCount: canvases.length,
+        canvasSizes: canvases.map((c) => ({ width: c.width, height: c.height, cssW: c.style.width, cssH: c.style.height })),
+        nonBlackPixels,
+        totalPixels,
+        pixelSampleError,
+      };
+    };
 
     // Market-context overlays - all derived purely from the same Kraken
     // OHLCV candle data already held in candleData[ticker] (Kraken's v2
