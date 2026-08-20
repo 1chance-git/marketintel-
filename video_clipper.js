@@ -131,15 +131,28 @@ function deriveLine(items, fallback) {
 // on-screen in that frame (see readOnScreenEvidence below), so the caption
 // is always evidence the viewer can see for themselves, not a
 // paraphrase of an unrelated sentence.
+//
+// Framed explicitly as the price's own reaction (this beat sits right
+// after the ETF-flow beat in the arc) - but deliberately says "reacts",
+// not "reacts to [ETF flows]" or any other implied cause. Whether that
+// specific price move was actually driven by the ETF flow, the narrative,
+// or something else entirely isn't something this pipeline computes or
+// verifies, so it must not claim it. Color comes directly from the real
+// sign of changeNum (more precise than deriveColor's keyword matching,
+// which was built for free-text signal lines, not a number we already
+// have authoritatively) - green/red only when there's an actual real
+// number to back it, white when price data isn't available.
 function buildChartLine(evidence) {
-  if (!evidence.btcPrice || evidence.btcPrice === "DATA UNAVAILABLE") return "BTC/USD LIVE CHART";
+  if (!evidence.btcPrice || evidence.btcPrice === "DATA UNAVAILABLE") {
+    return { text: "BTC/USD LIVE CHART", color: "#FFFFFF" };
+  }
   const changeNum = parseFloat(evidence.btcChange);
-  const changeText = Number.isFinite(changeNum)
-    ? `${changeNum >= 0 ? "UP" : "DOWN"} ${Math.abs(changeNum).toFixed(2)}%`
-    : null;
+  const hasChange = Number.isFinite(changeNum);
+  const changeText = hasChange ? `${changeNum >= 0 ? "UP" : "DOWN"} ${Math.abs(changeNum).toFixed(2)}%` : null;
   const trend = evidence.trend && evidence.trend !== "—" ? evidence.trend.toUpperCase() : null;
-  const parts = ["BTC", changeText, trend ? `· ${trend} TREND` : null].filter(Boolean);
-  return truncateForOverlay(parts.join(" "));
+  const parts = ["BTC REACTS", changeText, trend ? `· ${trend}` : null].filter(Boolean);
+  const color = hasChange ? (changeNum >= 0 ? "#00FF00" : "#FF4444") : "#FFFFFF";
+  return { text: truncateForOverlay(parts.join(" ")), color };
 }
 
 function buildDirectionLine(evidence) {
@@ -149,23 +162,24 @@ function buildDirectionLine(evidence) {
 
 // One {text, color} beat per KEYFRAMES panel, in the same order: ETF/
 // Institutional Flow, BTC chart, Narrative Shift, Direction/Market State -
-// also read top-to-bottom as a 4-beat arc (setup -> turning point ->
-// confirmation -> outcome). Color per beat is derived from that beat's own
-// text (deriveColor), not fixed - see the KEYFRAMES comment above. The ETF
-// and Narrative beats still come from the real Grok signal text (already
-// the exact evidence that panel displays); the chart and Direction beats
-// come from readOnScreenEvidence's DOM read instead (see buildChartLine/
-// buildDirectionLine) - both sources are "what's actually shown", just
-// read from different places (Supabase signal vs. rendered DOM), never a
-// generic paraphrase.
+// also read top-to-bottom as a 4-beat arc (setup -> price reaction ->
+// confirmation -> outcome). The ETF and Narrative beats come from the real
+// Grok signal text (already the exact evidence that panel displays), each
+// colored via deriveColor's keyword match; the chart beat comes from
+// buildChartLine, which already picks its own color from the real price
+// sign (see its comment - more precise than keyword matching for a number
+// we already have exactly); Direction comes from buildDirectionLine's DOM
+// read, colored via deriveColor same as the text beats.
 function deriveNarrativeArc(signal, evidence) {
-  const lines = [
-    deriveLine(signal.etf_flows, "ETF FLOW UPDATE"),
+  const etfText = deriveLine(signal.etf_flows, "ETF FLOW UPDATE");
+  const narrativeText = deriveLine(signal.x_narratives, "NARRATIVE PULSE");
+  const directionText = buildDirectionLine(evidence);
+  return [
+    { text: etfText, color: deriveColor(etfText) },
     buildChartLine(evidence),
-    deriveLine(signal.x_narratives, "NARRATIVE PULSE"),
-    buildDirectionLine(evidence),
+    { text: narrativeText, color: deriveColor(narrativeText) },
+    { text: directionText, color: deriveColor(directionText) },
   ];
-  return lines.map((text) => ({ text, color: deriveColor(text) }));
 }
 
 // Inside a single-quoted FFmpeg filter argument, backslash is NOT an
