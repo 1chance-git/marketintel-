@@ -55,7 +55,15 @@ const FONT_PATH = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 // edge ("SELECTIV...", "FE...") because these panels' text genuinely wraps
 // across their full width, so the crop needs to keep all of it.
 const ROTATOR_CROP = "w='iw*0.32':h='ih*0.50':x='iw*0.68':y='ih*0.117'";
-const CHART_CROP = "w='iw*0.68':h='ih*0.65':x=0:y='ih*0.117'";
+// Measured, not guessed: the chart's own getBoundingClientRect() via the
+// __mktChartDebug hook in production returned {x:0, y:176, width:869.4,
+// height:505} on a 1280x720 source - the previous y='ih*0.117' (84px)
+// assumed the chart container started 92px higher than it actually does,
+// so the crop mostly grabbed empty space above the chart and cut off most
+// of the real candle canvas. Confirmed via pixel-sampling the chart's own
+// canvas (getImageData) that it *was* painting real candles the whole
+// time - this was a crop-alignment bug, not a data/render bug.
+const CHART_CROP = "w='iw*0.68':h='ih*0.701':x=0:y='ih*0.2444'";
 
 // Also doubles as a 4-beat narrative arc (setup -> turning point ->
 // confirmation -> outcome), matching the pacing style of a reference clip -
