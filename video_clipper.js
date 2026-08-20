@@ -55,15 +55,24 @@ const FONT_PATH = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 // edge ("SELECTIV...", "FE...") because these panels' text genuinely wraps
 // across their full width, so the crop needs to keep all of it.
 const ROTATOR_CROP = "w='iw*0.32':h='ih*0.50':x='iw*0.68':y='ih*0.117'";
-// Measured, not guessed: the chart's own getBoundingClientRect() via the
-// __mktChartDebug hook in production returned {x:0, y:176, width:869.4,
-// height:505} on a 1280x720 source - the previous y='ih*0.117' (84px)
-// assumed the chart container started 92px higher than it actually does,
-// so the crop mostly grabbed empty space above the chart and cut off most
-// of the real candle canvas. Confirmed via pixel-sampling the chart's own
-// canvas (getImageData) that it *was* painting real candles the whole
-// time - this was a crop-alignment bug, not a data/render bug.
-const CHART_CROP = "w='iw*0.68':h='ih*0.701':x=0:y='ih*0.2444'";
+// The candle chart itself was dropped from this beat - even once it was
+// rendering correctly (confirmed via production pixel-sampling), it read
+// as a visually empty/uninformative panel to an actual viewer, since 10
+// short 1-minute candles barely register at this zoom. Replaced with a
+// tight crop on the dashboard's own TREND/VOLUME badges and EMA/VWAP
+// legend instead - the same real-evidence numbers already backing
+// buildChartLine's overlay text, just showing the source pixels for them
+// too. Derived from CSS layout math (.chart-header 58px + border,
+// #rotation-indicator 18px + border, #chart-badges 16px + border, stacked
+// above #chart-area, whose own top was independently measured at y=176
+// via getBoundingClientRect() in production - so this panel's top is
+// 176 - 95 = 81px) - centered/narrowed horizontally to zoom in on the
+// badge/legend text rather than the full-width panel. Not yet verified
+// against a real getBoundingClientRect() the way CHART_CROP eventually
+// was - __mktChartDebug now reports headerRect/rotationIndicatorRect/
+// badgesRect/legendRect so this can be tightened further from real
+// numbers if the first render is off.
+const INFO_CROP = "w='iw*0.39':h='ih*0.16':x='iw*0.144':y='ih*0.1125'";
 
 // Also doubles as a 4-beat narrative arc (setup -> turning point ->
 // confirmation -> outcome), matching the pacing style of a reference clip -
@@ -71,7 +80,7 @@ const CHART_CROP = "w='iw*0.68':h='ih*0.701':x=0:y='ih*0.2444'";
 // live below (deriveNarrativeArc), never fixed/fabricated copy.
 const KEYFRAMES = [
   { start: 0, end: 3, crop: ROTATOR_CROP, rotatorSlide: 0 }, // ETF / Institutional Flow
-  { start: 3, end: 5, crop: CHART_CROP, rotatorSlide: null }, // BTC chart - not rotator content
+  { start: 3, end: 5, crop: INFO_CROP, rotatorSlide: null }, // TREND/VOLUME + EMA/VWAP legend - not rotator content
   { start: 5, end: 8, crop: ROTATOR_CROP, rotatorSlide: 2 }, // Narrative Shift
   { start: 8, end: 11, crop: ROTATOR_CROP, rotatorSlide: 3 }, // Market Sentiment / Direction
 ];
@@ -169,15 +178,16 @@ function buildDirectionLine(evidence) {
 }
 
 // One {text, color} beat per KEYFRAMES panel, in the same order: ETF/
-// Institutional Flow, BTC chart, Narrative Shift, Direction/Market State -
-// also read top-to-bottom as a 4-beat arc (setup -> price reaction ->
-// confirmation -> outcome). The ETF and Narrative beats come from the real
-// Grok signal text (already the exact evidence that panel displays), each
-// colored via deriveColor's keyword match; the chart beat comes from
-// buildChartLine, which already picks its own color from the real price
-// sign (see its comment - more precise than keyword matching for a number
-// we already have exactly); Direction comes from buildDirectionLine's DOM
-// read, colored via deriveColor same as the text beats.
+// Institutional Flow, TREND/VOLUME info panel, Narrative Shift, Direction/
+// Market State - also read top-to-bottom as a 4-beat arc (setup -> price
+// reaction -> confirmation -> outcome). The ETF and Narrative beats come
+// from the real Grok signal text (already the exact evidence that panel
+// displays), each colored via deriveColor's keyword match; the info-panel
+// beat comes from buildChartLine, which already picks its own color from
+// the real price sign (see its comment - more precise than keyword
+// matching for a number we already have exactly); Direction comes from
+// buildDirectionLine's DOM read, colored via deriveColor same as the text
+// beats.
 function deriveNarrativeArc(signal, evidence) {
   const etfText = deriveLine(signal.etf_flows, "ETF FLOW UPDATE");
   const narrativeText = deriveLine(signal.x_narratives, "NARRATIVE PULSE");
@@ -306,21 +316,21 @@ async function captureFrames(frameDir) {
     await new Promise((r) => setTimeout(r, 1500)); // let live data connections settle, same rationale as VideoEngine.run()
 
     // Confirmed in production: the flat 1500ms wait above isn't long enough
-    // for the chart's own Kraken WebSocket feed to deliver real OHLC candle
-    // data (separate from the market-board ticker) - a real uploaded clip's
-    // "BTC chart" segment showed an empty chart with "TREND NEUTRAL" /
-    // "VOLUME LOW" placeholders and no candles. #chart-fallback ("Waiting
-    // for live BTC/USD feed...") is hidden via style.display="none" only
-    // once candleData[ticker] actually has candles (see index.html) - wait
-    // on that same signal VideoEngine.run() already uses (via mb-price-BTC)
-    // for the market board, applied here to the chart specifically.
+    // for the Kraken WebSocket feed to deliver real OHLC candle data
+    // (separate from the market-board ticker). The info panel's TREND/
+    // VOLUME badges are also computed from that same candleData, so they'd
+    // otherwise still show "—" placeholders here even though the candle
+    // canvas itself is no longer in frame. #chart-fallback is hidden via
+    // style.display="none" only once candleData[ticker] actually has
+    // candles (see index.html) - wait on that same signal VideoEngine.run()
+    // already uses (via mb-price-BTC) for the market board.
     await page
       .waitForFunction(
         () => document.getElementById("chart-fallback")?.style.display === "none",
         { timeout: 8_000 }
       )
       .catch(() => {
-        console.error("[CLIPPER] BTC chart candle data not confirmed within 8s of page load; capturing anyway");
+        console.error("[CLIPPER] BTC candle data not confirmed within 8s of page load; capturing anyway");
       });
 
     const chartDebug = await page.evaluate(() => window.__mktChartDebug?.() ?? null);

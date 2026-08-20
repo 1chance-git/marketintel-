@@ -1023,44 +1023,28 @@
     });
 
     // Non-visual diagnostic hook, same pattern as __mktRotatorGoTo - lets
-    // an external Puppeteer session (video_clipper.js) read the chart's
-    // actual internal state (candle count already setData()'d onto the
-    // series, container size) instead of only inferring it indirectly.
+    // an external Puppeteer session (video_clipper.js) read real layout
+    // rects instead of guessing crop coordinates by eyeballing screenshots
+    // (which is how the chart-crop bugs happened in the first place).
+    // The candle canvas itself was dropped from the clip's chart beat -
+    // it read as visually empty/uninformative to viewers even once
+    // rendering correctly - in favor of the TREND/VOLUME/EMA/VWAP info
+    // panel, which is the actually legible content in that area.
     window.__mktChartDebug = () => {
-      const rect = containerEl.getBoundingClientRect();
-      const canvases = Array.from(containerEl.querySelectorAll("canvas"));
-      // Sample actual painted pixels off the real canvas (same-origin, not
-      // tainted - drawn programmatically by the chart library, not loaded
-      // from an image) to tell apart "nothing painted" from "painted, but
-      // our crop rectangle doesn't line up with where it actually is" -
-      // candleCount/seriesDataCount alone can't distinguish those two.
-      let nonBlackPixels = 0;
-      let totalPixels = 0;
-      let pixelSampleError = null;
-      try {
-        for (const canvas of canvases) {
-          if (!canvas.width || !canvas.height) continue;
-          const ctx = canvas.getContext("2d");
-          const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          totalPixels += canvas.width * canvas.height;
-          for (let i = 0; i < data.length; i += 4) {
-            if (data[i] > 10 || data[i + 1] > 10 || data[i + 2] > 10) nonBlackPixels++;
-          }
-        }
-      } catch (err) {
-        pixelSampleError = err.message;
-      }
+      const rectOf = (el) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height };
+      };
+      const headerEl = document.querySelector(".chart-header");
+      const badgesEl = document.getElementById("chart-badges");
+      const legendEl = document.getElementById("chart-legend");
       return {
         candleCount: candleData.BTC.length,
-        seriesDataCount: candleSeries.data().length,
-        containerWidth: containerEl.clientWidth,
-        containerHeight: containerEl.clientHeight,
-        containerRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-        canvasCount: canvases.length,
-        canvasSizes: canvases.map((c) => ({ width: c.width, height: c.height, cssW: c.style.width, cssH: c.style.height })),
-        nonBlackPixels,
-        totalPixels,
-        pixelSampleError,
+        headerRect: rectOf(headerEl),
+        rotationIndicatorRect: rectOf(document.getElementById("rotation-indicator")),
+        badgesRect: rectOf(badgesEl),
+        legendRect: rectOf(legendEl),
       };
     };
 
