@@ -30,18 +30,35 @@ const OUTPUT_HEIGHT = 1920;
 const CLIP_FPS = 15; // lower than the main broadcast's 30fps - a 12s still-dashboard clip doesn't need more, and it halves render time
 const FONT_PATH = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf";
 
-// Matches the terminal layout's panel positions: ETF/Institutional Flow
-// (top-right), BTC chart (left half), Narrative Shift (mid-right),
-// Direction/Market State (upper-right). Also doubles as a 4-beat narrative
-// arc (setup -> turning point -> confirmation -> outcome), matching the
-// pacing style of a reference clip - but unlike that reference, the text
-// filling each beat is always derived live below (deriveNarrativeArc),
-// never fixed/fabricated copy.
+// Crop fractions below are measured directly from the real rendered layout
+// via getBoundingClientRect() at the 1280x720 capture viewport (not
+// eyeballed) - #card-rotator sits at x:870-1280,y:84-549 and #chart-pane at
+// x:0-870,y:84-681. Earlier hand-guessed fractions cropped well outside
+// those bounds, capturing mostly blank background and cutting the actual
+// panel text off at the frame edges after scale+pad (reported as "can't
+// read the text, it's clipped" - confirmed by rendering a real frame and
+// comparing against the measured DOM rects).
+//
+// There are only two physically distinct regions on screen at any moment -
+// the chart and the rotating intel card - not four. #card-rotator itself
+// cycles through 5 categories (ETF/Macro/Narrative/Sentiment/WhatNow) on a
+// 10s timer that's longer than this whole clip, so left alone it would
+// never naturally reach "Narrative"/"Direction" within an ~11s clip.
+// rotatorSlideAt (used by captureFrames) forces the intended category into
+// view at each keyframe's start time via the window.__mktRotatorGoTo hook
+// index.html exposes, instead of relying on real-time auto-rotation.
+const ROTATOR_CROP = "w='iw*0.32':h='ih*0.646':x='iw*0.68':y='ih*0.117'";
+const CHART_CROP = "w='iw*0.68':h='ih*0.829':x=0:y='ih*0.117'";
+
+// Also doubles as a 4-beat narrative arc (setup -> turning point ->
+// confirmation -> outcome), matching the pacing style of a reference clip -
+// but unlike that reference, the text filling each beat is always derived
+// live below (deriveNarrativeArc), never fixed/fabricated copy.
 const KEYFRAMES = [
-  { start: 0, end: 3, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.15'" },
-  { start: 3, end: 5, crop: "w='iw*0.6':h='ih*0.6':x=0:y='ih*0.2'" },
-  { start: 5, end: 8, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.35'" },
-  { start: 8, end: 11, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.1'" },
+  { start: 0, end: 3, crop: ROTATOR_CROP, rotatorSlide: 0 }, // ETF / Institutional Flow
+  { start: 3, end: 5, crop: CHART_CROP, rotatorSlide: null }, // BTC chart - not rotator content
+  { start: 5, end: 8, crop: ROTATOR_CROP, rotatorSlide: 2 }, // Narrative Shift
+  { start: 8, end: 11, crop: ROTATOR_CROP, rotatorSlide: 3 }, // Market Sentiment / Direction
 ];
 const CLIP_DURATION_S = KEYFRAMES[KEYFRAMES.length - 1].end;
 
@@ -183,8 +200,19 @@ async function captureFrames(frameDir) {
     await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: "networkidle0", timeout: 30_000 });
     await new Promise((r) => setTimeout(r, 1500)); // let live data connections settle, same rationale as VideoEngine.run()
 
+    // showRotatorSlide(0) already runs on page load, matching KEYFRAMES[0]'s
+    // rotatorSlide - only need to force it for the later keyframes.
+    const pendingRotatorCues = KEYFRAMES
+      .filter((k) => k.rotatorSlide !== null && k.start > 0)
+      .map((k) => ({ atSecond: k.start, slide: k.rotatorSlide }));
+
     const totalFrames = CLIP_DURATION_S * CLIP_FPS;
     for (let i = 0; i < totalFrames; i++) {
+      const elapsedS = i / CLIP_FPS;
+      while (pendingRotatorCues.length && elapsedS >= pendingRotatorCues[0].atSecond) {
+        const cue = pendingRotatorCues.shift();
+        await page.evaluate((slide) => window.__mktRotatorGoTo?.(slide), cue.slide);
+      }
       const frameNum = String(i).padStart(5, "0");
       await page.screenshot({ path: path.join(frameDir, `frame_${frameNum}.jpg`), type: "jpeg", quality: 85 });
       await new Promise((r) => setTimeout(r, 1000 / CLIP_FPS));
