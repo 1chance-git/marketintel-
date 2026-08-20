@@ -2128,6 +2128,14 @@
 
     showRotatorSlide(rotatorIndex);
     setInterval(advanceRotator, ROTATION_INTERVAL_MS);
+
+    // Exposed purely so video_clipper.js's short-clip capture can force a
+    // specific intelligence category into view at a specific moment
+    // (ROTATION_INTERVAL_MS is 10s, far longer than an ~11s clip, so
+    // without this the clip would never naturally rotate past the first
+    // category). No effect on normal viewer-facing behavior - nothing
+    // here calls it during regular playback.
+    window.__mktRotatorGoTo = showRotatorSlide;
   })();
 </script>
 <script>
