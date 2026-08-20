@@ -221,32 +221,32 @@ function escapeDrawtext(text) {
 }
 
 function buildFilterComplex(arc) {
-  // Single filter chain: time-varying crop (via between() in the crop
-  // expression's own enable-equivalent - crop doesn't have `enable`, so
-  // each segment's w/h/x/y is itself a conditional expression selecting
-  // based on `t`) -> scale to fit within the vertical canvas -> pad the
-  // remainder with black (matches the requested #000000 background) ->
-  // one drawtext per keyframe segment, each only visible in its own time
-  // window via `enable='between(t,start,end)'`.
-  // crop filter needs a single w/h/x/y expression, not per-segment - build
-  // one nested if() chain per dimension from the keyframe list.
-  const nestedIf = (getter) =>
-    KEYFRAMES.reduceRight(
-      (acc, k, i) => (i === KEYFRAMES.length - 1 ? getter(k) : `if(between(t,${k.start},${k.end}),${getter(k)},${acc})`),
-      ""
+  // Per-keyframe branch, not a single time-varying crop: verified locally
+  // (real ffmpeg 5.1.9 render, not assumed) that ffmpeg's crop filter only
+  // evaluates its OWN OUTPUT w/h once at filter init - x/y can vary per
+  // frame via between(t,...), but w/h stay frozen at whichever keyframe's
+  // dimensions happened to evaluate first (KEYFRAMES[0], the rotator
+  // crop). Every later keyframe with a *different* crop size (the chart
+  // beat's CHART_CROP) silently got the rotator's frozen size instead of
+  // its own - this is why the chart segment never showed real candles no
+  // matter how correct its coordinates were: the crop filter itself
+  // couldn't apply them. Fix: split the input into one branch per
+  // keyframe, trim each to its own time window, crop/scale/pad each at
+  // its own fixed size, then concat back into one continuous stream -
+  // concat reconstructs continuous PTS across segments, so a single
+  // downstream between(t,...) drawtext pass still works unmodified.
+  const branchLabels = KEYFRAMES.map((_, i) => `seg${i}`);
+  const splitStage = `split=${KEYFRAMES.length}${KEYFRAMES.map((_, i) => `[s${i}]`).join("")}`;
+  const branchStages = KEYFRAMES.map((k, i) => {
+    const crop = k.crop.replace(/:exact=1$/, "");
+    return (
+      `[s${i}]trim=start=${k.start}:end=${k.end},setpts=PTS-STARTPTS,` +
+      `crop=${crop}:exact=1,` +
+      `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,` +
+      `pad=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[${branchLabels[i]}]`
     );
-  const parseCropField = (crop, field) => {
-    const m = crop.match(new RegExp(`${field}='?([^:']+)'?`));
-    return m ? m[1] : field === "x" || field === "y" ? "0" : "iw";
-  };
-  const wExpr = nestedIf((k) => parseCropField(k.crop, "w"));
-  const hExpr = nestedIf((k) => parseCropField(k.crop, "h"));
-  const xExpr = nestedIf((k) => parseCropField(k.crop, "x"));
-  const yExpr = nestedIf((k) => parseCropField(k.crop, "y"));
-
-  const cropStage = `crop=w='${wExpr}':h='${hExpr}':x='${xExpr}':y='${yExpr}':exact=1`;
-  const scaleStage = `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease:eval=frame`;
-  const padStage = `pad=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black`;
+  });
+  const concatStage = `${branchLabels.map((l) => `[${l}]`).join("")}concat=n=${KEYFRAMES.length}:v=1:a=0[vconcat]`;
 
   const drawtextStages = KEYFRAMES.map((k, i) => {
     const text = escapeDrawtext(arc[i].text);
@@ -263,7 +263,9 @@ function buildFilterComplex(arc) {
     return `drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=${arc[i].color}:fontsize=${OVERLAY_FONTSIZE}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=120:enable='between(t,${k.start},${k.end})'`;
   });
 
-  return [cropStage, scaleStage, padStage, ...drawtextStages].join(",");
+  const drawtextChain = drawtextStages.length ? `[vconcat]${drawtextStages.join(",")}[vout]` : "[vconcat]copy[vout]";
+
+  return [`[0:v]${splitStage}`, ...branchStages, concatStage, drawtextChain].join(";\n");
 }
 
 // Reads the exact numbers/labels the dashboard itself has already computed
@@ -357,7 +359,7 @@ function renderVideo(frameDir, outputPath, arc) {
       "-framerate", String(CLIP_FPS),
       "-i", path.join(frameDir, "frame_%05d.jpg"),
       "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-      "-filter_complex", `[0:v]${buildFilterComplex(arc)}[vout]`,
+      "-filter_complex", buildFilterComplex(arc),
       "-map", "[vout]", "-map", "1:a:0", "-shortest",
       "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "128k",
