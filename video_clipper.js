@@ -78,14 +78,30 @@ function deriveColor(text) {
   return "#FFFFFF";
 }
 
-// Verified against real ffmpeg drawtext output (via the bbox filter) at
-// fontsize=58 on the 1080px-wide canvas: text past ~28-30 uppercase
-// characters overflows the frame horizontally and gets clipped at the
-// edges. 30 chars leaves a safe margin - applied to every beat's final
-// text, regardless of which source built it.
+// fontsize was 58 originally; real signal text (e.g. "RECENT OUTFLOWS ON
+// BTC, SELECTIVE ETH INFLOWS") needed truncating well before the 30-char
+// width limit, and a flat character-count cut landed mid-word ("...SEL...")
+// which reads as broken, not just short - that's what "the overlay is
+// still clipped" meant (not literal off-canvas clipping - the bbox-verified
+// 30-char limit did keep text on-canvas - but an ugly mid-word cut looks
+// exactly like clipping to a viewer). Fixed two ways: dropped fontsize to
+// 42 for real headroom (verified via ffmpeg's bbox filter: real signal
+// text up to ~40 chars fits with margin at this size, vs ~30 at 58), and
+// truncateForOverlay now backs up to the last whole word instead of
+// cutting mid-word.
+const OVERLAY_FONTSIZE = 42;
+const OVERLAY_MAX_CHARS = 36;
+
 function truncateForOverlay(text) {
   const upper = text.toUpperCase();
-  return upper.length > 30 ? `${upper.slice(0, 27)}...` : upper;
+  if (upper.length <= OVERLAY_MAX_CHARS) return upper;
+  const cut = upper.slice(0, OVERLAY_MAX_CHARS - 3);
+  const lastSpace = cut.lastIndexOf(" ");
+  // Only back up to the last word if that doesn't throw away most of the
+  // budget (e.g. one long hyphenless word) - otherwise a hard cut is less
+  // jarring than truncating down to just a couple of words.
+  const base = lastSpace > OVERLAY_MAX_CHARS * 0.5 ? cut.slice(0, lastSpace) : cut;
+  return `${base}...`;
 }
 
 // Real signal text, not fabricated copy: same "Label: detail" convention
@@ -215,7 +231,7 @@ function buildFilterComplex(arc) {
     // top of the 1920px-tall canvas rather than the previous bottom-anchor.
     // Color comes from this beat's own derived sentiment (arc[i].color),
     // not a fixed per-panel value.
-    return `drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=${arc[i].color}:fontsize=58:borderw=3:bordercolor=black:x=(w-text_w)/2:y=120:enable='between(t,${k.start},${k.end})'`;
+    return `drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=${arc[i].color}:fontsize=${OVERLAY_FONTSIZE}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=120:enable='between(t,${k.start},${k.end})'`;
   });
 
   return [cropStage, scaleStage, padStage, ...drawtextStages].join(",");
