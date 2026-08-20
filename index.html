@@ -428,11 +428,11 @@
   }
 
   .card-title {
-    flex: 0 0 22px;
-    height: 22px;
+    flex: 0 0 30px;
+    height: 30px;
     padding: 0 12px;
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 8px;
     border-bottom: 1px solid #1a1a1a;
@@ -467,15 +467,32 @@
   }
 
   .card-updated {
-    font-size: 9px;
-    color: #5a5a5a;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
     white-space: nowrap;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
   }
 
-  .card-updated.stale {
+  .card-updated-rel {
+    font-size: 9px;
+    color: #5a5a5a;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    line-height: 1.3;
+  }
+
+  .card-updated.stale .card-updated-rel {
     color: #d4914a;
+  }
+
+  /* Exact report timestamp beneath the relative "Updated X ago" text -
+     same Grok/Supabase signal timestamp, just formatted as a fixed
+     date/time instead of a rolling relative offset. */
+  .card-updated-exact {
+    font-size: 7px;
+    color: #444;
+    letter-spacing: 0.02em;
+    line-height: 1.3;
   }
 
   .card-body {
@@ -848,7 +865,10 @@
             <span class="title-icon" id="rotator-icon" aria-hidden="true">&#127974;</span>
             <span id="rotator-title-text">ETF / Institutional Flow</span>
           </span>
-          <span class="card-updated" id="rotator-updated"></span>
+          <span class="card-updated" id="rotator-updated">
+            <span class="card-updated-rel" id="rotator-updated-rel"></span>
+            <span class="card-updated-exact" id="rotator-updated-exact"></span>
+          </span>
         </div>
         <div class="card-body term-body rotator-body" id="rotator-body">
           <div class="rotator-slide" id="slide-etf">
@@ -877,7 +897,10 @@
       <div class="card" id="card-description">
         <div class="card-title">
           <span class="card-title-label"><span class="title-icon" aria-hidden="true">&#128221;</span>Market Description</span>
-          <span class="card-updated" id="description-updated"></span>
+          <span class="card-updated" id="description-updated">
+            <span class="card-updated-rel" id="description-updated-rel"></span>
+            <span class="card-updated-exact" id="description-updated-exact"></span>
+          </span>
         </div>
         <div class="card-body desc-body">
           <p class="desc-text" id="description-text">Awaiting sufficient market intelligence.</p>
@@ -1578,6 +1601,10 @@
     const whatNowListEl = document.getElementById("whatnow-list");
     const rotatorUpdatedEl = document.getElementById("rotator-updated");
     const descriptionUpdatedEl = document.getElementById("description-updated");
+    const rotatorUpdatedRelEl = document.getElementById("rotator-updated-rel");
+    const descriptionUpdatedRelEl = document.getElementById("description-updated-rel");
+    const rotatorUpdatedExactEl = document.getElementById("rotator-updated-exact");
+    const descriptionUpdatedExactEl = document.getElementById("description-updated-exact");
     const descriptionTextEl = document.getElementById("description-text");
 
     const STALE_THRESHOLD_MS = 26 * 60 * 60 * 1000; // daily cadence + buffer
@@ -1601,15 +1628,35 @@
       return `Updated ${days}d ago`;
     }
 
+    // Exact report time beneath the relative "Updated X ago" label - same
+    // underlying Grok/Supabase signal timestamp, formatted as a fixed
+    // date/time (in the viewer's local time) instead of a rolling offset.
+    function formatExact(timestamp) {
+      const then = new Date(timestamp);
+      if (Number.isNaN(then.getTime())) return "";
+      return then.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    }
+
     function updateAgeLabels() {
       if (!lastSignalTimestamp) return;
 
-      const label = formatAge(lastSignalTimestamp);
+      const relLabel = formatAge(lastSignalTimestamp);
+      const exactLabel = formatExact(lastSignalTimestamp);
       const isStale = Date.now() - new Date(lastSignalTimestamp).getTime() > STALE_THRESHOLD_MS;
 
       [rotatorUpdatedEl, descriptionUpdatedEl].forEach((el) => {
-        el.textContent = label;
         el.classList.toggle("stale", isStale);
+      });
+      [rotatorUpdatedRelEl, descriptionUpdatedRelEl].forEach((el) => {
+        el.textContent = relLabel;
+      });
+      [rotatorUpdatedExactEl, descriptionUpdatedExactEl].forEach((el) => {
+        el.textContent = exactLabel;
       });
     }
 
