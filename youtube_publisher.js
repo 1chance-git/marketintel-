@@ -285,16 +285,24 @@ export async function uploadShort(videoBuffer, { signal, overlayText }) {
   const accessToken = await getAccessToken({ clientId, clientSecret, refreshToken });
   const metadata = buildShortMetadata({ signal, overlayText });
 
-  const boundary = `yt-upload-${Date.now()}`;
-  const metadataPart = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`;
-  const videoPartHeader = `--${boundary}\r\nContent-Type: video/mp4\r\n\r\n`;
-  const closing = `\r\n--${boundary}--`;
-  const body = Buffer.concat([Buffer.from(metadataPart), Buffer.from(videoPartHeader), videoBuffer, Buffer.from(closing)]);
+  // Verified against production: a hand-rolled multipart/related body
+  // (manual "--boundary\r\nContent-Type...\r\n\r\n..." string concatenation)
+  // was rejected by YouTube with 400 "Invalid JSON payload received. Unable
+  // to parse number" pointing at the boundary line itself - the framing
+  // looked byte-for-byte spec-correct under manual inspection, which is
+  // exactly the risk of hand-rolling this instead of using a runtime-
+  // guaranteed-correct multipart builder. Using the built-in
+  // FormData/Blob here instead: fetch computes a correct boundary and
+  // Content-Type itself (never set Content-Type manually when passing a
+  // FormData body - doing so would use a wrong/missing boundary param).
+  const form = new FormData();
+  form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json; charset=UTF-8" }));
+  form.append("file", new Blob([videoBuffer], { type: "video/mp4" }));
 
   const res = await fetchWithTimeout(`${API_BASE}/videos?uploadType=multipart&part=snippet,status`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary=${boundary}` },
-    body,
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
   }, UPLOAD_FETCH_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(`videos.insert failed: ${res.status} ${await res.text()}`);
