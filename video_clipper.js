@@ -47,8 +47,15 @@ const FONT_PATH = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 // rotatorSlideAt (used by captureFrames) forces the intended category into
 // view at each keyframe's start time via the window.__mktRotatorGoTo hook
 // index.html exposes, instead of relying on real-time auto-rotation.
-const ROTATOR_CROP = "w='iw*0.32':h='ih*0.646':x='iw*0.68':y='ih*0.117'";
-const CHART_CROP = "w='iw*0.68':h='ih*0.829':x=0:y='ih*0.117'";
+// Zoomed in vertically from the full-panel crop (was h*0.646/h*0.829) to
+// skip the empty gap between each panel's title and its actual content,
+// matching a reference clip's tighter, more magnified framing. Width is
+// kept at the panel's full real width, NOT narrowed - verified by
+// rendering: narrowing the width cut off real text mid-word at the right
+// edge ("SELECTIV...", "FE...") because these panels' text genuinely wraps
+// across their full width, so the crop needs to keep all of it.
+const ROTATOR_CROP = "w='iw*0.32':h='ih*0.50':x='iw*0.68':y='ih*0.117'";
+const CHART_CROP = "w='iw*0.68':h='ih*0.65':x=0:y='ih*0.117'";
 
 // Also doubles as a 4-beat narrative arc (setup -> turning point ->
 // confirmation -> outcome), matching the pacing style of a reference clip -
