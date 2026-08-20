@@ -285,24 +285,35 @@ export async function uploadShort(videoBuffer, { signal, overlayText }) {
   const accessToken = await getAccessToken({ clientId, clientSecret, refreshToken });
   const metadata = buildShortMetadata({ signal, overlayText });
 
-  // Verified against production: a hand-rolled multipart/related body
-  // (manual "--boundary\r\nContent-Type...\r\n\r\n..." string concatenation)
-  // was rejected by YouTube with 400 "Invalid JSON payload received. Unable
-  // to parse number" pointing at the boundary line itself - the framing
-  // looked byte-for-byte spec-correct under manual inspection, which is
-  // exactly the risk of hand-rolling this instead of using a runtime-
-  // guaranteed-correct multipart builder. Using the built-in
-  // FormData/Blob here instead: fetch computes a correct boundary and
-  // Content-Type itself (never set Content-Type manually when passing a
-  // FormData body - doing so would use a wrong/missing boundary param).
-  const form = new FormData();
-  form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json; charset=UTF-8" }));
-  form.append("file", new Blob([videoBuffer], { type: "video/mp4" }));
+  // The real bug behind two rounds of production failures here wasn't the
+  // multipart body at all - it was the URL. Google's media-upload
+  // endpoints live under a separate `/upload/` path prefix
+  // (upload.../upload/youtube/v3/videos), distinct from the regular API
+  // path (.../youtube/v3/videos) every other call in this file correctly
+  // uses. Posting a multipart body to the *regular* (non-upload) path
+  // never reaches a multipart-aware handler - it hits the plain JSON
+  // endpoint, which tried to parse the whole raw multipart body as JSON
+  // and choked on the boundary marker (400 "Unable to parse number").
+  // Switching to FormData (multipart/form-data) instead of fixing the URL
+  // masked the symptom differently (a generic "invalid argument", since
+  // the JSON endpoint still isn't multipart-aware regardless of which
+  // multipart flavor is sent) but didn't fix the actual cause. Verified
+  // via a local HTTP server capturing raw bytes: the original hand-rolled
+  // multipart/related body was always byte-for-byte correct on the wire -
+  // reverted back to it now that the real fix (the URL) is in place, since
+  // multipart/related (not multipart/form-data) is what this endpoint's
+  // documentation specifies.
+  const UPLOAD_API_BASE = "https://www.googleapis.com/upload/youtube/v3";
+  const boundary = `yt-upload-${Date.now()}`;
+  const metadataPart = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`;
+  const videoPartHeader = `--${boundary}\r\nContent-Type: video/mp4\r\n\r\n`;
+  const closing = `\r\n--${boundary}--`;
+  const body = Buffer.concat([Buffer.from(metadataPart), Buffer.from(videoPartHeader), videoBuffer, Buffer.from(closing)]);
 
-  const res = await fetchWithTimeout(`${API_BASE}/videos?uploadType=multipart&part=snippet,status`, {
+  const res = await fetchWithTimeout(`${UPLOAD_API_BASE}/videos?uploadType=multipart&part=snippet,status`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${accessToken}` },
-    body: form,
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary=${boundary}` },
+    body,
   }, UPLOAD_FETCH_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(`videos.insert failed: ${res.status} ${await res.text()}`);
