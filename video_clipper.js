@@ -30,11 +30,17 @@ const OUTPUT_HEIGHT = 1920;
 const CLIP_FPS = 15; // lower than the main broadcast's 30fps - a 12s still-dashboard clip doesn't need more, and it halves render time
 const FONT_PATH = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf";
 
+// Matches the terminal layout's panel positions: ETF/Institutional Flow
+// (top-right), BTC chart (left half), Narrative Shift (mid-right),
+// Direction/Market State (upper-right). Color is a per-panel accent (green
+// for the two "flow/direction" indicator panels, white elsewhere) - purely
+// styling, not tied to whatever the live text on a given panel actually
+// says.
 const KEYFRAMES = [
-  { start: 0, end: 3, crop: "w='iw*0.6':h='ih*0.6':x=0:y='ih*0.2'" },
-  { start: 3, end: 5, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.1'" },
-  { start: 5, end: 8, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.4'" },
-  { start: 8, end: 12, crop: "w=iw:h=ih:x=0:y=0" },
+  { start: 0, end: 3, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.15'", color: "#00FF00" },
+  { start: 3, end: 5, crop: "w='iw*0.6':h='ih*0.6':x=0:y='ih*0.2'", color: "#FFFFFF" },
+  { start: 5, end: 8, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.35'", color: "#FFFFFF" },
+  { start: 8, end: 11, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.1'", color: "#00FF00" },
 ];
 const CLIP_DURATION_S = KEYFRAMES[KEYFRAMES.length - 1].end;
 
@@ -48,16 +54,22 @@ function deriveLine(items, fallback) {
   if (!raw) return fallback;
   const idx = raw.indexOf(":");
   const text = (idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim();
-  const truncated = text.length > 60 ? `${text.slice(0, 57)}...` : text;
+  // Verified against real ffmpeg drawtext output (via the bbox filter) at
+  // fontsize=58 on the 1080px-wide canvas: text past ~28-30 uppercase
+  // characters overflows the frame horizontally and gets clipped at the
+  // edges. 30 chars leaves a safe margin.
+  const truncated = text.length > 30 ? `${text.slice(0, 27)}...` : text;
   return truncated.toUpperCase();
 }
 
+// One line per KEYFRAMES panel, in the same order: ETF/Institutional Flow,
+// BTC chart, Narrative Shift, Direction/Market State.
 function deriveOverlayText(signal) {
   return [
+    deriveLine(signal.etf_flows, "ETF FLOW UPDATE"),
     deriveLine(signal.system_macro, "MARKET UPDATE"),
-    deriveLine(signal.sentiment, "SENTIMENT CHECK"),
     deriveLine(signal.x_narratives, "NARRATIVE PULSE"),
-    "MARKET INTELLIGENCE",
+    deriveLine(signal.sentiment, "MARKET STATE"),
   ];
 }
 
@@ -127,7 +139,9 @@ function buildFilterComplex(overlayText) {
     // is the actual mechanism that would evaluate an expression embedded
     // in it, not just a display quirk. With it off, a raw `%` is always
     // literal, so no % escaping is needed (or attempted) in escapeDrawtext.
-    return `drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=white:fontsize=58:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-320:enable='between(t,${k.start},${k.end})'`;
+    // Top-centered: x centers horizontally, y is a fixed offset from the
+    // top of the 1920px-tall canvas rather than the previous bottom-anchor.
+    return `drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=${k.color}:fontsize=58:borderw=3:bordercolor=black:x=(w-text_w)/2:y=120:enable='between(t,${k.start},${k.end})'`;
   });
 
   return [cropStage, scaleStage, padStage, ...drawtextStages].join(",");
