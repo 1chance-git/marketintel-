@@ -38,8 +38,9 @@ async function writeSignalAtomically(signal) {
 }
 
 export class StreamEngine {
-  constructor({ pollIntervalMs = POLL_INTERVAL_MS } = {}) {
+  constructor({ pollIntervalMs = POLL_INTERVAL_MS, onNewSignal = null } = {}) {
     this.pollIntervalMs = pollIntervalMs;
+    this.onNewSignal = onNewSignal;
     this.timer = null;
     this.running = false;
     this.lastSignalId = null;
@@ -78,6 +79,14 @@ export class StreamEngine {
       this.lastSignalId = signal.id;
       this.lastSignalTimestamp = signal.timestamp;
       console.log("[SUPABASE] Poll successful");
+      if (typeof this.onNewSignal === "function") {
+        // Fire-and-forget: a clip-generation/upload failure must never
+        // break the Supabase poll loop or the main broadcast. video_clipper
+        // already logs and swallows its own errors internally.
+        this.onNewSignal(normalized).catch((err) => {
+          console.error(`[CLIPPER] onNewSignal handler failed: ${err.message}`);
+        });
+      }
     } catch (err) {
       console.error(`[SUPABASE] Poll failed: failed to write grok_data.json (${err.message})`);
     }
@@ -207,7 +216,7 @@ const { url: YOUTUBE_LIVE_URL, source: YOUTUBE_LIVE_URL_SOURCE } = resolveYoutub
 
 console.log(`[VIDEO_ENGINE] YOUTUBE_LIVE_URL resolved: source=${YOUTUBE_LIVE_URL_SOURCE} configured=${!!YOUTUBE_LIVE_URL}`);
 
-function startLocalServer(rootDir) {
+export function startLocalServer(rootDir) {
   const mimeTypes = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -853,7 +862,16 @@ if (isMainModule()) {
     // (pm2/systemd/Docker restart policy) keeps the whole pipeline alive.
     console.log("[STREAM_ENGINE] Live mode: starting Supabase poller + continuous video capture");
 
-    const engine = new StreamEngine();
+    // Dynamic import (not a static top-level one) avoids a circular
+    // module dependency: video_clipper.js imports startLocalServer from
+    // this file, so this file can't statically import video_clipper.js
+    // back without both modules partially loading each other.
+    const engine = new StreamEngine({
+      onNewSignal: async (signal) => {
+        const { generateAndUploadClip } = await import("./video_clipper.js");
+        await generateAndUploadClip(signal);
+      },
+    });
     engine.start();
 
     startAutoPublish();

@@ -33,19 +33,35 @@
 //   YOUTUBE_OAUTH_REFRESH_TOKEN  - refresh token for an account with access
 //                                  to the channel, scope
 //                                  https://www.googleapis.com/auth/youtube
+//
+// Optional env vars, for the post-upload review-email notification
+// (sendReviewNotification below) - without these, uploadShort() still
+// works, it just skips sending an email:
+//   RESEND_API_KEY    - API key from resend.com
+//   NOTIFICATION_EMAIL - where to send the "review this Short" email
+//   RESEND_FROM_EMAIL  - optional; defaults to Resend's own unverified
+//                        sender address, which works without owning/
+//                        verifying a domain
 // ---------------------------------------------------------------------------
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const API_BASE = "https://www.googleapis.com/youtube/v3";
 const FETCH_TIMEOUT_MS = 15_000;
+// The videos.insert upload body is a full-length rendered clip, not a JSON
+// API call - a real upload can legitimately take well over 15s on a slow
+// or congested connection, so it needs its own, longer timeout rather than
+// FETCH_TIMEOUT_MS. Still bounded, though: an unbounded fetch here would
+// leave a dangling promise forever if the connection genuinely hangs mid
+// upload (distinct from just being slow).
+const UPLOAD_FETCH_TIMEOUT_MS = 300_000;
 
 // A stalled fetch (network partition, YouTube API hang) would otherwise
 // leave tick() in flight indefinitely, silently pausing all polling for a
 // process meant to run unattended for weeks - every network call in this
 // module goes through this so a hang can't outlast the timeout.
-async function fetchWithTimeout(url, options = {}) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
@@ -156,9 +172,139 @@ async function createFreshBroadcast(accessToken, streamId) {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!bindRes.ok) {
-    throw new Error(`liveBroadcasts.bind failed: ${bindRes.status} ${await bindRes.text()}`);
+    const bindErrorText = await bindRes.text();
+    // A broadcast that's inserted but never bound is invisible to the
+    // "anything bound?" check every other tick does - left alone, it would
+    // sit there forever while the 60s creation cooldown lets a fresh one
+    // get created and potentially abandoned the same way, repeating
+    // indefinitely and burning liveBroadcasts.insert/bind quota (~100 units
+    // per attempt). Delete it rather than leak it. A failure here is logged
+    // but never allowed to replace/mask the original bind error below - the
+    // bind failure is the one callers need to see and react to.
+    try {
+      const deleteRes = await fetchWithTimeout(`${API_BASE}/liveBroadcasts?id=${encodeURIComponent(broadcast.id)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!deleteRes.ok) {
+        console.error(`[YOUTUBE_PUBLISH] Cleanup failed: could not delete orphaned broadcast ${broadcast.id} after a failed bind (${deleteRes.status} ${await deleteRes.text()}) - it will need manual deletion in YouTube Studio`);
+      }
+    } catch (cleanupErr) {
+      console.error(`[YOUTUBE_PUBLISH] Cleanup failed: could not delete orphaned broadcast ${broadcast.id} after a failed bind (${cleanupErr.message}) - it will need manual deletion in YouTube Studio`);
+    }
+    throw new Error(`liveBroadcasts.bind failed: ${bindRes.status} ${bindErrorText}`);
   }
   return broadcast.id;
+}
+
+// Builds title/description/tags from the real signal that triggered the
+// clip - never fixed marketing copy. Falls back to a neutral, non-claim
+// default only when a field is genuinely empty, same rule video_clipper.js
+// uses for the on-screen overlay text.
+function buildShortMetadata({ signal, overlayText }) {
+  const hook = overlayText?.[0] || "Market Update";
+  const title = `${hook} | Live Terminal Intel`.slice(0, 100);
+  const bodyLines = (overlayText || []).slice(0, 3).filter(Boolean);
+  const description = [
+    ...bodyLines,
+    "",
+    `Signal timestamp: ${signal?.timestamp || "unknown"}`,
+    "Live terminal intel - not financial advice.",
+  ].join("\n");
+  return {
+    snippet: {
+      title,
+      description,
+      tags: ["CryptoMarkets", "MarketIntelligence", "LiveTerminal"],
+      categoryId: "28", // Science & Technology
+    },
+    status: { privacyStatus: "unlisted", selfDeclaredMadeForKids: false },
+  };
+}
+
+const RESEND_API_URL = "https://api.resend.com/emails";
+
+// Notifies the operator by email once a Short is uploaded so it can be
+// reviewed from a phone without opening YouTube Studio. Purely additive
+// like the OAuth-gated features above: without RESEND_API_KEY and
+// NOTIFICATION_EMAIL both set, this logs once and does nothing. A failure
+// here is never allowed to make the upload itself look like it failed -
+// the video is already live on YouTube (as unlisted) by the time this
+// runs, so this only ever logs and swallows its own errors.
+async function sendReviewNotification({ title, watchUrl }) {
+  const apiKey = process.env.RESEND_API_KEY || null;
+  const toEmail = process.env.NOTIFICATION_EMAIL || null;
+  if (!apiKey || !toEmail) {
+    console.log("[YOUTUBE_PUBLISH] Review email skipped: RESEND_API_KEY/NOTIFICATION_EMAIL not fully configured");
+    return;
+  }
+  const fromEmail = process.env.RESEND_FROM_EMAIL || "MarketIntel Shorts <onboarding@resend.dev>";
+
+  try {
+    const res = await fetchWithTimeout(RESEND_API_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: fromEmail,
+        to: [toEmail],
+        subject: `🚨 REVIEW SHORT: ${title}`,
+        html: `
+          <p>A new unlisted Short just finished uploading and is ready for review.</p>
+          <p style="margin: 24px 0;">
+            <a href="${watchUrl}" style="display: inline-block; padding: 12px 24px; background: #d02a2a; color: #ffffff; font-weight: bold; text-decoration: none; border-radius: 6px;">
+              &#9654; Review on YouTube
+            </a>
+          </p>
+          <p><strong>${watchUrl}</strong></p>
+        `,
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`Resend API failed: ${res.status} ${await res.text()}`);
+    }
+    console.log("[YOUTUBE_PUBLISH] Review email sent");
+  } catch (err) {
+    console.error(`[YOUTUBE_PUBLISH] Review email failed to send: ${err.message}`);
+  }
+}
+
+// Uploads a rendered short-form clip as an unlisted video for manual
+// review before it's ever made public. Uses the multipart/related upload
+// protocol Google's API requires (a JSON metadata part followed by the raw
+// video bytes) - the web-form-style multipart/form-data that fetch's
+// built-in FormData produces is not accepted by this endpoint, so the
+// body is built manually.
+export async function uploadShort(videoBuffer, { signal, overlayText }) {
+  const clientId = process.env.YOUTUBE_OAUTH_CLIENT_ID || null;
+  const clientSecret = process.env.YOUTUBE_OAUTH_CLIENT_SECRET || null;
+  const refreshToken = process.env.YOUTUBE_OAUTH_REFRESH_TOKEN || null;
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error("YOUTUBE_OAUTH_CLIENT_ID/YOUTUBE_OAUTH_CLIENT_SECRET/YOUTUBE_OAUTH_REFRESH_TOKEN not configured");
+  }
+
+  const accessToken = await getAccessToken({ clientId, clientSecret, refreshToken });
+  const metadata = buildShortMetadata({ signal, overlayText });
+
+  const boundary = `yt-upload-${Date.now()}`;
+  const metadataPart = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`;
+  const videoPartHeader = `--${boundary}\r\nContent-Type: video/mp4\r\n\r\n`;
+  const closing = `\r\n--${boundary}--`;
+  const body = Buffer.concat([Buffer.from(metadataPart), Buffer.from(videoPartHeader), videoBuffer, Buffer.from(closing)]);
+
+  const res = await fetchWithTimeout(`${API_BASE}/videos?uploadType=multipart&part=snippet,status`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary=${boundary}` },
+    body,
+  }, UPLOAD_FETCH_TIMEOUT_MS);
+  if (!res.ok) {
+    throw new Error(`videos.insert failed: ${res.status} ${await res.text()}`);
+  }
+  const result = await res.json();
+  const watchUrl = `https://youtu.be/${result.id}`;
+
+  await sendReviewNotification({ title: metadata.snippet.title, watchUrl });
+
+  return watchUrl;
 }
 
 // Starts a background poller that automatically transitions any bound,
@@ -198,7 +344,20 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
   const CREATE_COOLDOWN_MS = 60_000;
   let lastCreateAttemptAt = 0;
 
+  // Reentrancy guard: tick() chains several sequential network calls, each
+  // individually capped at 15s via fetchWithTimeout, but the chain as a
+  // whole (token refresh -> list -> maybe create+bind, or list -> transition)
+  // can exceed the 20s setInterval period. Without this, two ticks could run
+  // concurrently and both observe "nothing bound" before either one acts,
+  // both creating a broadcast, or both transitioning the same candidate.
+  let tickInProgress = false;
+
   const tick = async () => {
+    if (tickInProgress) {
+      console.log("[YOUTUBE_PUBLISH] Skipped: previous tick still in progress");
+      return;
+    }
+    tickInProgress = true;
     try {
       const accessToken = await getAccessToken({ clientId, clientSecret, refreshToken });
       const broadcasts = await listMyBroadcasts(accessToken);
@@ -298,6 +457,8 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
       // will self-resolve on a later tick - log and keep polling rather than
       // treating this as fatal.
       console.error(`[YOUTUBE_PUBLISH] ${err.message}`);
+    } finally {
+      tickInProgress = false;
     }
   };
 
