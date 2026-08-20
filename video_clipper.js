@@ -32,17 +32,34 @@ const FONT_PATH = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 
 // Matches the terminal layout's panel positions: ETF/Institutional Flow
 // (top-right), BTC chart (left half), Narrative Shift (mid-right),
-// Direction/Market State (upper-right). Color is a per-panel accent (green
-// for the two "flow/direction" indicator panels, white elsewhere) - purely
-// styling, not tied to whatever the live text on a given panel actually
-// says.
+// Direction/Market State (upper-right). Also doubles as a 4-beat narrative
+// arc (setup -> turning point -> confirmation -> outcome), matching the
+// pacing style of a reference clip - but unlike that reference, the text
+// filling each beat is always derived live below (deriveNarrativeArc),
+// never fixed/fabricated copy.
 const KEYFRAMES = [
-  { start: 0, end: 3, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.15'", color: "#00FF00" },
-  { start: 3, end: 5, crop: "w='iw*0.6':h='ih*0.6':x=0:y='ih*0.2'", color: "#FFFFFF" },
-  { start: 5, end: 8, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.35'", color: "#FFFFFF" },
-  { start: 8, end: 11, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.1'", color: "#00FF00" },
+  { start: 0, end: 3, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.15'" },
+  { start: 3, end: 5, crop: "w='iw*0.6':h='ih*0.6':x=0:y='ih*0.2'" },
+  { start: 5, end: 8, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.35'" },
+  { start: 8, end: 11, crop: "w='iw*0.5':h='ih*0.5':x='iw*0.5':y='ih*0.1'" },
 ];
 const CLIP_DURATION_S = KEYFRAMES[KEYFRAMES.length - 1].end;
+
+// Color is derived from the real text's own sentiment, not a fixed
+// per-panel assignment - a bearish line never gets painted green just
+// because it landed in the "outcome" beat. Keyword lists are intentionally
+// small/conservative (only clear, common directional terms already used in
+// this dashboard's own vocabulary - see index.html's FEAR/GREED, TREND,
+// DIRECTION indicators) so this doesn't become its own source of invented
+// claims; anything ambiguous stays white.
+const BULLISH_WORDS = /\b(bullish|risk-on|inflow|inflows|accumulation|rally|surge|breakout|upgrade|outperform)\b/i;
+const BEARISH_WORDS = /\b(bearish|risk-off|outflow|outflows|selloff|sell-off|decline|downgrade|underperform|dump)\b/i;
+
+function deriveColor(text) {
+  if (BULLISH_WORDS.test(text)) return "#00FF00";
+  if (BEARISH_WORDS.test(text)) return "#FF4444";
+  return "#FFFFFF";
+}
 
 // Real signal text, not fabricated copy: same "Label: detail" convention
 // index.html's splitLabelValue() already relies on for these fields - take
@@ -62,15 +79,19 @@ function deriveLine(items, fallback) {
   return truncated.toUpperCase();
 }
 
-// One line per KEYFRAMES panel, in the same order: ETF/Institutional Flow,
-// BTC chart, Narrative Shift, Direction/Market State.
-function deriveOverlayText(signal) {
-  return [
+// One {text, color} beat per KEYFRAMES panel, in the same order: ETF/
+// Institutional Flow, BTC chart, Narrative Shift, Direction/Market State -
+// also read top-to-bottom as a 4-beat arc (setup -> turning point ->
+// confirmation -> outcome). Color per beat is derived from that beat's own
+// text (deriveColor), not fixed - see the KEYFRAMES comment above.
+function deriveNarrativeArc(signal) {
+  const lines = [
     deriveLine(signal.etf_flows, "ETF FLOW UPDATE"),
     deriveLine(signal.system_macro, "MARKET UPDATE"),
     deriveLine(signal.x_narratives, "NARRATIVE PULSE"),
     deriveLine(signal.sentiment, "MARKET STATE"),
   ];
+  return lines.map((text) => ({ text, color: deriveColor(text) }));
 }
 
 // Inside a single-quoted FFmpeg filter argument, backslash is NOT an
@@ -103,7 +124,7 @@ function escapeDrawtext(text) {
     .replace(/'/g, "");
 }
 
-function buildFilterComplex(overlayText) {
+function buildFilterComplex(arc) {
   // Single filter chain: time-varying crop (via between() in the crop
   // expression's own enable-equivalent - crop doesn't have `enable`, so
   // each segment's w/h/x/y is itself a conditional expression selecting
@@ -132,7 +153,7 @@ function buildFilterComplex(overlayText) {
   const padStage = `pad=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black`;
 
   const drawtextStages = KEYFRAMES.map((k, i) => {
-    const text = escapeDrawtext(overlayText[i]);
+    const text = escapeDrawtext(arc[i].text);
     // expansion=none turns off drawtext's %{...}/strftime text_expansion
     // outright, rather than relying on escaping % to survive it - signal
     // text is untrusted (external Gmail->Supabase bridge), and expansion
@@ -141,7 +162,9 @@ function buildFilterComplex(overlayText) {
     // literal, so no % escaping is needed (or attempted) in escapeDrawtext.
     // Top-centered: x centers horizontally, y is a fixed offset from the
     // top of the 1920px-tall canvas rather than the previous bottom-anchor.
-    return `drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=${k.color}:fontsize=58:borderw=3:bordercolor=black:x=(w-text_w)/2:y=120:enable='between(t,${k.start},${k.end})'`;
+    // Color comes from this beat's own derived sentiment (arc[i].color),
+    // not a fixed per-panel value.
+    return `drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=${arc[i].color}:fontsize=58:borderw=3:bordercolor=black:x=(w-text_w)/2:y=120:enable='between(t,${k.start},${k.end})'`;
   });
 
   return [cropStage, scaleStage, padStage, ...drawtextStages].join(",");
@@ -172,14 +195,14 @@ async function captureFrames(frameDir) {
   }
 }
 
-function renderVideo(frameDir, outputPath, overlayText) {
+function renderVideo(frameDir, outputPath, arc) {
   return new Promise((resolve, reject) => {
     const args = [
       "-y",
       "-framerate", String(CLIP_FPS),
       "-i", path.join(frameDir, "frame_%05d.jpg"),
       "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-      "-filter_complex", `[0:v]${buildFilterComplex(overlayText)}[vout]`,
+      "-filter_complex", `[0:v]${buildFilterComplex(arc)}[vout]`,
       "-map", "[vout]", "-map", "1:a:0", "-shortest",
       "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "128k",
@@ -253,9 +276,9 @@ export async function generateAndUploadClip(signal) {
     frameDir = await mkdtemp(path.join(tmpdir(), "clip-frames-"));
     await captureFrames(frameDir);
 
-    const overlayText = deriveOverlayText(signal);
+    const arc = deriveNarrativeArc(signal);
     const outputPath = path.join(frameDir, "clip.mp4");
-    await renderVideo(frameDir, outputPath, overlayText);
+    await renderVideo(frameDir, outputPath, arc);
     console.log("[RENDER COMPLETE]");
 
     const videoBuffer = await readFile(outputPath);
@@ -264,7 +287,10 @@ export async function generateAndUploadClip(signal) {
     }
 
     console.log("[UPLOADING TO YOUTUBE]");
-    const watchUrl = await uploadShort(videoBuffer, { signal, overlayText });
+    // uploadShort/buildShortMetadata only need the plain text (for the
+    // title/description) - the per-beat color is purely a video-render
+    // concern, not relevant to the upload metadata.
+    const watchUrl = await uploadShort(videoBuffer, { signal, overlayText: arc.map((beat) => beat.text) });
     console.log(`[REVIEW URL GENERATED] ${watchUrl}`);
     return watchUrl;
   } catch (err) {
