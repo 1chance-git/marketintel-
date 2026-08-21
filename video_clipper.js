@@ -247,13 +247,26 @@ function buildDirectionLine(evidence) {
 // buildDirectionLine's DOM read, colored via deriveColor same as the text
 // beats.
 function deriveNarrativeArc(signal, evidence) {
+  // Color is classified from the raw, untruncated signal text (same text
+  // buildAnalystNarrationSegments' sentimentClause classifies) - NOT from
+  // the display text deriveLine returns. Those diverge in two ways that
+  // silently broke the caption/narration match this pipeline is supposed
+  // to guarantee: truncateForOverlay's 36-char cap can cut a sentiment
+  // keyword off before deriveColor ever sees it, and when deriveLine finds
+  // a real institution name, the display text becomes just that name
+  // (e.g. "BlackRock") which never contains a sentiment word at all - so a
+  // real bullish signal about BlackRock inflows could render with a
+  // neutral white caption while narration says "bullish" for the exact
+  // same beat.
+  const etfRaw = extractDetail(signal.etf_flows, "ETF FLOW UPDATE");
+  const narrativeRaw = extractDetail(signal.x_narratives, "NARRATIVE PULSE");
   const etfText = deriveLine(signal.etf_flows, "ETF FLOW UPDATE");
   const narrativeText = deriveLine(signal.x_narratives, "NARRATIVE PULSE");
   const directionText = buildDirectionLine(evidence);
   return [
-    { text: etfText, color: deriveColor(etfText) },
+    { text: etfText, color: deriveColor(etfRaw) },
     buildChartLine(evidence),
-    { text: narrativeText, color: deriveColor(narrativeText) },
+    { text: narrativeText, color: deriveColor(narrativeRaw) },
     { text: directionText, color: deriveColor(directionText) },
   ];
 }
@@ -707,47 +720,71 @@ async function readOnScreenEvidence(page) {
 // order that means the browser has to stay open across that gap instead
 // of closing right after reading evidence.
 async function openCapturePage() {
-  const { server, port } = await startLocalServer(path.resolve("."));
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
-
-  const page = await browser.newPage();
-  // Forward browser-console output (e.g. index.html's own caught
-  // "[CHART] candleSeries.setData failed" logs) into Railway logs - the
-  // headless page's console is otherwise invisible to us, so a silently
-  // caught chart render error would look identical to "no error at all"
-  // from here.
-  page.on("console", (msg) => console.log(`[CLIPPER PAGE CONSOLE] ${msg.text()}`));
-  page.on("pageerror", (err) => console.error(`[CLIPPER PAGE ERROR] ${err.message}`));
-  await page.setViewport({ width: SOURCE_WIDTH, height: SOURCE_HEIGHT });
-  await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: "networkidle0", timeout: 30_000 });
-  await new Promise((r) => setTimeout(r, 1500)); // let live data connections settle, same rationale as VideoEngine.run()
-
-  // Confirmed in production: the flat 1500ms wait above isn't long enough
-  // for the Kraken WebSocket feed to deliver real OHLC candle data
-  // (separate from the market-board ticker). The info panel's TREND/
-  // VOLUME badges are also computed from that same candleData, so they'd
-  // otherwise still show "—" placeholders here even though the candle
-  // canvas itself is no longer in frame. #chart-fallback is hidden via
-  // style.display="none" only once candleData[ticker] actually has
-  // candles (see index.html) - wait on that same signal VideoEngine.run()
-  // already uses (via mb-price-BTC) for the market board.
-  await page
-    .waitForFunction(
-      () => document.getElementById("chart-fallback")?.style.display === "none",
-      { timeout: 8_000 }
-    )
-    .catch(() => {
-      console.error("[CLIPPER] BTC candle data not confirmed within 8s of page load; capturing anyway");
+  // Everything below page.goto (and goto itself) can throw - a slow/
+  // degraded dashboard load hitting the 30s timeout, a Chromium render
+  // error inside page.evaluate/readOnScreenEvidence, etc. Previously none
+  // of that was caught here, so the caller's `browser`/`server` variables
+  // (only assigned via destructuring AFTER this function returns) stayed
+  // undefined on any such failure, and the finally block's cleanup never
+  // ran - a real production leak: one Chromium process + local HTTP server
+  // per failed page load, on a pipeline that runs continuously and can hit
+  // this on any transient page-load hiccup. Catch and close whatever was
+  // actually created before rethrowing, so the caller's cleanup is never
+  // the only line of defense.
+  let server;
+  let browser;
+  try {
+    ({ server } = await startLocalServer(path.resolve(".")));
+    browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
+    const port = server.address().port;
 
-  const chartDebug = await page.evaluate(() => window.__mktChartDebug?.() ?? null);
-  console.log(`[CLIPPER] Chart debug at capture time: ${JSON.stringify(chartDebug)}`);
+    const page = await browser.newPage();
+    // Forward browser-console output (e.g. index.html's own caught
+    // "[CHART] candleSeries.setData failed" logs) into Railway logs - the
+    // headless page's console is otherwise invisible to us, so a silently
+    // caught chart render error would look identical to "no error at all"
+    // from here.
+    page.on("console", (msg) => console.log(`[CLIPPER PAGE CONSOLE] ${msg.text()}`));
+    page.on("pageerror", (err) => console.error(`[CLIPPER PAGE ERROR] ${err.message}`));
+    await page.setViewport({ width: SOURCE_WIDTH, height: SOURCE_HEIGHT });
+    await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: "networkidle0", timeout: 30_000 });
+    await new Promise((r) => setTimeout(r, 1500)); // let live data connections settle, same rationale as VideoEngine.run()
 
-  const evidence = await readOnScreenEvidence(page);
-  return { page, browser, server, evidence };
+    // Confirmed in production: the flat 1500ms wait above isn't long enough
+    // for the Kraken WebSocket feed to deliver real OHLC candle data
+    // (separate from the market-board ticker). The info panel's TREND/
+    // VOLUME badges are also computed from that same candleData, so they'd
+    // otherwise still show "—" placeholders here even though the candle
+    // canvas itself is no longer in frame. #chart-fallback is hidden via
+    // style.display="none" only once candleData[ticker] actually has
+    // candles (see index.html) - wait on that same signal VideoEngine.run()
+    // already uses (via mb-price-BTC) for the market board.
+    await page
+      .waitForFunction(
+        () => document.getElementById("chart-fallback")?.style.display === "none",
+        { timeout: 8_000 }
+      )
+      .catch(() => {
+        console.error("[CLIPPER] BTC candle data not confirmed within 8s of page load; capturing anyway");
+      });
+
+    const chartDebug = await page.evaluate(() => window.__mktChartDebug?.() ?? null);
+    console.log(`[CLIPPER] Chart debug at capture time: ${JSON.stringify(chartDebug)}`);
+
+    const evidence = await readOnScreenEvidence(page);
+    return { page, browser, server, evidence };
+  } catch (err) {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+    if (server) {
+      server.close();
+    }
+    throw err;
+  }
 }
 
 // Captures the actual frame sequence once real per-beat timing (keyframes,
