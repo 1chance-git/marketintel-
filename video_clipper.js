@@ -16,7 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import puppeteer from "puppeteer";
@@ -207,6 +207,71 @@ function deriveNarrativeArc(signal, evidence) {
   ];
 }
 
+// Voiceover narration - reads the exact same beat text already on screen
+// (arc[].text), in the same order, so the spoken script is never a
+// separate/invented line: it's the identical real-evidence text used for
+// the overlays, just spoken aloud instead of only displayed. Joined into
+// one sentence-per-beat script rather than four separate TTS calls, so
+// pacing/pauses between clauses sound natural instead of four disjoint
+// clips stitched together.
+function buildNarrationScript(arc) {
+  return arc.map((beat) => beat.text.trim().replace(/\.+$/, "")).join(". ") + ".";
+}
+
+const ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech";
+// "Adam" - a public ElevenLabs premade voice with a clear, professional,
+// mid-register male tone (news/narration style), matching the "News,
+// Narration" voice tags called for by the spec. Not user-uploaded/cloned,
+// so no extra account setup beyond the API key itself.
+const ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB";
+const TTS_FETCH_TIMEOUT_MS = 20_000;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = TTS_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Returns an mp3 Buffer, or null if narration isn't configured/fails - a
+// TTS outage must never take down clip generation, since the rest of the
+// pipeline (real dashboard capture + overlays) is fully functional without
+// it. Errors are logged, not thrown.
+async function synthesizeVoiceover(script) {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) {
+    console.log("[CLIPPER] ELEVENLABS_API_KEY not configured - skipping voiceover narration");
+    return null;
+  }
+  try {
+    const res = await fetchWithTimeout(`${ELEVENLABS_TTS_URL}/${ELEVENLABS_VOICE_ID}`, {
+      method: "POST",
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+        Accept: "audio/mpeg",
+      },
+      body: JSON.stringify({
+        text: script,
+        model_id: "eleven_turbo_v2_5",
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error(`[CLIPPER] ElevenLabs TTS request failed (${res.status}): ${body.slice(0, 300)}`);
+      return null;
+    }
+    return Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    console.error(`[CLIPPER] ElevenLabs TTS request errored: ${err.message}`);
+    return null;
+  }
+}
+
 // Inside a single-quoted FFmpeg filter argument, backslash is NOT an
 // escape character in the intuitive sense - `\'` does not reliably embed a
 // literal apostrophe. Verified directly against this container's real
@@ -387,15 +452,24 @@ async function captureFrames(frameDir) {
   }
 }
 
-function renderVideo(frameDir, outputPath, arc) {
+function renderVideo(frameDir, outputPath, arc, narrationPath) {
   return new Promise((resolve, reject) => {
+    // Real ElevenLabs narration when available, silent track otherwise -
+    // never fails the render if TTS wasn't configured/errored. apad pads
+    // the audio with silence if the narration runs shorter than the clip
+    // (rather than -shortest, which would truncate the VIDEO down to
+    // whatever the audio's own length happens to be); the output -t bound
+    // below still governs the final duration either way.
+    const audioInputArgs = narrationPath
+      ? ["-i", narrationPath]
+      : ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"];
     const args = [
       "-y",
       "-framerate", String(CLIP_FPS),
       "-i", path.join(frameDir, "frame_%05d.jpg"),
-      "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+      ...audioInputArgs,
       "-filter_complex", buildFilterComplex(arc),
-      "-map", "[vout]", "-map", "1:a:0", "-shortest",
+      "-map", "[vout]", "-map", "1:a:0", "-af", "apad",
       // tune=stillimage + a lower CRF (higher quality/bitrate) for
       // graphics-first rendering - this content is flat-color dashboard
       // panels and text, not natural video, so x264's motion-focused psy
@@ -475,8 +549,20 @@ export async function generateAndUploadClip(signal) {
     const evidence = await captureFrames(frameDir);
 
     const arc = deriveNarrativeArc(signal, evidence);
+
+    // Voiceover reads the exact same on-screen beat text (buildNarrationScript
+    // joins arc[].text verbatim) - never a separately-written script. Best
+    // effort: a TTS failure/missing API key must not block the rest of the
+    // clip, since the visual pipeline is fully functional without it.
+    let narrationPath = null;
+    const narrationAudio = await synthesizeVoiceover(buildNarrationScript(arc));
+    if (narrationAudio) {
+      narrationPath = path.join(frameDir, "narration.mp3");
+      await writeFile(narrationPath, narrationAudio);
+    }
+
     const outputPath = path.join(frameDir, "clip.mp4");
-    await renderVideo(frameDir, outputPath, arc);
+    await renderVideo(frameDir, outputPath, arc, narrationPath);
     console.log("[RENDER COMPLETE]");
 
     const videoBuffer = await readFile(outputPath);
