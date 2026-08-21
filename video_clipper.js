@@ -2,17 +2,13 @@
 // Short-form vertical clip generator (Block 10)
 //
 // Renders a short (~12s) 1080x1920 vertical MP4 from the live dashboard,
-// with punchy text overlays pulled directly from the real Grok/Supabase
+// narrated by an ElevenLabs voiceover built from the real Grok/Supabase
 // signal that triggered it - never fabricated/placeholder marketing copy.
+// No on-screen text overlay - the spoken narration carries that
+// information audibly instead, so a caption would just duplicate it.
 // Runs as its own isolated Puppeteer + FFmpeg pipeline (separate local
 // server instance, separate browser) so it never contends with or
 // interferes with the main continuous RTMP broadcast in stream_engine.js.
-//
-// Font note: the spec that prompted this asked for "fonts-impact", but no
-// such Debian/apt package exists (verified: apt-cache search returns
-// nothing) and the real Impact TrueType font isn't freely redistributable
-// via apt. Uses LiberationSans-Bold instead, already installed by the
-// existing Dockerfile via fonts-liberation - no Dockerfile change needed.
 // ---------------------------------------------------------------------------
 
 import { spawn } from "node:child_process";
@@ -32,7 +28,6 @@ const OUTPUT_HEIGHT = 1920;
 // user's own "Master Recipe" export spec calls for 30 or 60fps (never
 // 720p/below-24fps) on data videos specifically, so numbers stay legible.
 const CLIP_FPS = 30;
-const FONT_PATH = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf";
 
 // Crop fractions below are measured directly from the real rendered layout
 // via getBoundingClientRect() at the 1280x720 capture viewport (not
@@ -119,9 +114,7 @@ function deriveColor(text) {
 // text up to ~40 chars fits with margin at this size, vs ~30 at 58), and
 // truncateForOverlay now backs up to the last whole word instead of
 // cutting mid-word.
-const OVERLAY_FONTSIZE = 42;
 const OVERLAY_MAX_CHARS = 36;
-const OVERLAY_FADE_S = 0.25; // fade-in duration at each beat's entrance, not its own trim/hold time
 
 function truncateForOverlay(text) {
   const upper = text.toUpperCase();
@@ -302,37 +295,7 @@ async function synthesizeVoiceover(script) {
   }
 }
 
-// Inside a single-quoted FFmpeg filter argument, backslash is NOT an
-// escape character in the intuitive sense - `\'` does not reliably embed a
-// literal apostrophe. Verified directly against this container's real
-// ffmpeg (6.1.1) with the actual multi-drawtext filter_complex this module
-// builds: the textbook "close quote, escaped literal quote, reopen quote"
-// technique (`'\''`) - correct in isolation per FFmpeg's own docs - was
-// tried first here and PROVED BROKEN in practice: once a drawtext's `text`
-// value contains that sequence, FFmpeg's option parser desyncs and
-// corrupts every *later* quoted clause in the same filter_complex, most
-// dangerously the enable='between(t,...)' clause on this drawtext and
-// every drawtext after it (they silently stop being time-gated, or their
-// params leak into the rendered text) - exactly the "corrupted filter
-// graph" risk this function exists to prevent, just triggered by the
-// textbook fix instead of the naive one. Plain `\'` alone (no reopen) does
-// at least parse safely (verified: no corruption of later clauses), but
-// silently swallows the apostrophe with no visible trace, so there is no
-// reliable way to make FFmpeg render a literal apostrophe here - dropping
-// it outright is simpler, equally safe, and just as legible on a vertical
-// short's overlay text. Backslash and colon (drawtext's own key/value
-// separator) still need real backslash-escaping. `%` is deliberately NOT
-// escaped here - see buildFilterComplex's `expansion=none`, which disables
-// drawtext's %{...} text_expansion entirely (the actual DoS/expression-
-// evaluation surface) so unescaped `%` is always literal and safe.
-function escapeDrawtext(text) {
-  return text
-    .replace(/\\/g, "\\\\")
-    .replace(/:/g, "\\:")
-    .replace(/'/g, "");
-}
-
-function buildFilterComplex(arc) {
+function buildFilterComplex() {
   // Per-keyframe branch, not a single time-varying crop: verified locally
   // (real ffmpeg 5.1.9 render, not assumed) that ffmpeg's crop filter only
   // evaluates its OWN OUTPUT w/h once at filter init - x/y can vary per
@@ -368,34 +331,14 @@ function buildFilterComplex(arc) {
       `[c${i}bgblur][c${i}fgscaled]overlay=(W-w)/2:(H-h)/2,setsar=1[${branchLabels[i]}]`
     );
   });
-  const concatStage = `${branchLabels.map((l) => `[${l}]`).join("")}concat=n=${KEYFRAMES.length}:v=1:a=0[vconcat]`;
+  // No on-screen text overlay - the ElevenLabs narration (buildAnalystNarration)
+  // now carries the same real facts audibly instead, so a redundant caption
+  // would just duplicate what's already spoken. concat's output is renamed
+  // straight to [vout] rather than [vconcat] since there's no drawtext pass
+  // left to chain after it.
+  const concatStage = `${branchLabels.map((l) => `[${l}]`).join("")}concat=n=${KEYFRAMES.length}:v=1:a=0[vout]`;
 
-  const drawtextStages = KEYFRAMES.map((k, i) => {
-    const text = escapeDrawtext(arc[i].text);
-    // expansion=none turns off drawtext's %{...}/strftime text_expansion
-    // outright, rather than relying on escaping % to survive it - signal
-    // text is untrusted (external Gmail->Supabase bridge), and expansion
-    // is the actual mechanism that would evaluate an expression embedded
-    // in it, not just a display quirk. With it off, a raw `%` is always
-    // literal, so no % escaping is needed (or attempted) in escapeDrawtext.
-    // Top-centered: x centers horizontally, y is a fixed offset from the
-    // top of the 1920px-tall canvas rather than the previous bottom-anchor.
-    // Color comes from this beat's own derived sentiment (arc[i].color),
-    // not a fixed per-panel value.
-    //
-    // alpha ramps 0->1 over the first OVERLAY_FADE_S of each beat's own
-    // window (verified locally: real ffmpeg render, brightness ramps
-    // 0->102->203->255 across the fade then holds) so text fades in at
-    // scene entrance rather than hard-cutting in; enable='between(t,...)'
-    // still gates visibility to exactly the beat's own start/end, so the
-    // overlay's duration continues to match the scene's duration exactly.
-    const alphaExpr = `if(lt(t-${k.start},${OVERLAY_FADE_S}),(t-${k.start})/${OVERLAY_FADE_S},1)`;
-    return `drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=${arc[i].color}:fontsize=${OVERLAY_FONTSIZE}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=120:alpha='${alphaExpr}':enable='between(t,${k.start},${k.end})'`;
-  });
-
-  const drawtextChain = drawtextStages.length ? `[vconcat]${drawtextStages.join(",")}[vout]` : "[vconcat]copy[vout]";
-
-  return [`[0:v]${splitStage}`, ...branchStages, concatStage, drawtextChain].join(";\n");
+  return [`[0:v]${splitStage}`, ...branchStages, concatStage].join(";\n");
 }
 
 // Reads the exact numbers/labels the dashboard itself has already computed
@@ -483,7 +426,7 @@ async function captureFrames(frameDir) {
   }
 }
 
-function renderVideo(frameDir, outputPath, arc, narrationPath) {
+function renderVideo(frameDir, outputPath, narrationPath) {
   return new Promise((resolve, reject) => {
     // Real ElevenLabs narration when available, silent track otherwise -
     // never fails the render if TTS wasn't configured/errored. apad pads
@@ -499,7 +442,7 @@ function renderVideo(frameDir, outputPath, arc, narrationPath) {
       "-framerate", String(CLIP_FPS),
       "-i", path.join(frameDir, "frame_%05d.jpg"),
       ...audioInputArgs,
-      "-filter_complex", buildFilterComplex(arc),
+      "-filter_complex", buildFilterComplex(),
       "-map", "[vout]", "-map", "1:a:0", "-af", "apad",
       // tune=stillimage + a lower CRF (higher quality/bitrate) for
       // graphics-first rendering - this content is flat-color dashboard
@@ -594,7 +537,7 @@ export async function generateAndUploadClip(signal) {
     }
 
     const outputPath = path.join(frameDir, "clip.mp4");
-    await renderVideo(frameDir, outputPath, arc, narrationPath);
+    await renderVideo(frameDir, outputPath, narrationPath);
     console.log("[RENDER COMPLETE]");
 
     const videoBuffer = await readFile(outputPath);
