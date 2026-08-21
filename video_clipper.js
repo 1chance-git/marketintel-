@@ -85,10 +85,10 @@ const INFO_CROP = "w='iw*0.1383':h='ih*0.091':x=0:y='ih*0.2007'";
 // but unlike that reference, the text filling each beat is always derived
 // live below (deriveNarrativeArc), never fixed/fabricated copy.
 const KEYFRAMES = [
-  { start: 0, end: 3, crop: ROTATOR_CROP, rotatorSlide: 0 }, // ETF / Institutional Flow
-  { start: 3, end: 5, crop: INFO_CROP, rotatorSlide: null }, // TREND/VOLUME + EMA/VWAP legend - not rotator content
-  { start: 5, end: 8, crop: ROTATOR_CROP, rotatorSlide: 2 }, // Narrative Shift
-  { start: 8, end: 11, crop: ROTATOR_CROP, rotatorSlide: 3 }, // Market Sentiment / Direction
+  { start: 0, end: 2.7, crop: ROTATOR_CROP, rotatorSlide: 0 }, // ETF / Institutional Flow
+  { start: 2.7, end: 5.5, crop: INFO_CROP, rotatorSlide: null }, // TREND/VOLUME + EMA/VWAP legend - not rotator content
+  { start: 5.5, end: 8.2, crop: ROTATOR_CROP, rotatorSlide: 2 }, // Narrative Shift
+  { start: 8.2, end: 11.0, crop: ROTATOR_CROP, rotatorSlide: 3 }, // Market Sentiment / Direction
 ];
 const CLIP_DURATION_S = KEYFRAMES[KEYFRAMES.length - 1].end;
 
@@ -254,13 +254,23 @@ function buildFilterComplex(arc) {
   // downstream between(t,...) drawtext pass still works unmodified.
   const branchLabels = KEYFRAMES.map((_, i) => `seg${i}`);
   const splitStage = `split=${KEYFRAMES.length}${KEYFRAMES.map((_, i) => `[s${i}]`).join("")}`;
+  // blur_fill background instead of solid black pad: whenever a crop's
+  // aspect ratio doesn't match the 1080x1920 output (which is most of the
+  // time - none of ROTATOR_CROP/INFO_CROP are 9:16), the remaining space
+  // is filled with a blurred, edge-to-edge cover-scaled copy of that same
+  // crop rather than flat black bars. Verified locally: variance sampled
+  // off a real rendered frame confirmed the background region is smoothly
+  // blurred (near-zero local variance) while the sharp foreground content
+  // sits centered on top at full detail.
   const branchStages = KEYFRAMES.map((k, i) => {
     const crop = k.crop.replace(/:exact=1$/, "");
     return (
       `[s${i}]trim=start=${k.start}:end=${k.end},setpts=PTS-STARTPTS,` +
-      `crop=${crop}:exact=1,` +
-      `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,` +
-      `pad=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[${branchLabels[i]}]`
+      `crop=${crop}:exact=1,split=2[c${i}fg][c${i}bg];` +
+      `[c${i}bg]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,` +
+      `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},gblur=sigma=20[c${i}bgblur];` +
+      `[c${i}fg]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease[c${i}fgscaled];` +
+      `[c${i}bgblur][c${i}fgscaled]overlay=(W-w)/2:(H-h)/2,setsar=1[${branchLabels[i]}]`
     );
   });
   const concatStage = `${branchLabels.map((l) => `[${l}]`).join("")}concat=n=${KEYFRAMES.length}:v=1:a=0[vconcat]`;
@@ -386,7 +396,13 @@ function renderVideo(frameDir, outputPath, arc) {
       "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
       "-filter_complex", buildFilterComplex(arc),
       "-map", "[vout]", "-map", "1:a:0", "-shortest",
-      "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+      // tune=stillimage + a lower CRF (higher quality/bitrate) for
+      // graphics-first rendering - this content is flat-color dashboard
+      // panels and text, not natural video, so x264's motion-focused psy
+      // optimizations buy nothing here and stillimage tuning keeps edges/
+      // text sharper instead. Verified locally that -tune stillimage is
+      // accepted by this ffmpeg/libx264 build.
+      "-c:v", "libx264", "-preset", "fast", "-tune", "stillimage", "-crf", "16", "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "128k",
       "-t", String(CLIP_DURATION_S),
       outputPath,
