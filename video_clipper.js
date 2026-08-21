@@ -27,10 +27,11 @@ const SOURCE_WIDTH = 1280;
 const SOURCE_HEIGHT = 720;
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
-// 24fps (not lower) - a downstream enhancement/upscale tool the user runs
-// on these clips after upload rejects anything below 24fps outright, so
-// 15fps clips silently couldn't be processed by it at all.
-const CLIP_FPS = 24;
+// 30fps: the downstream enhancement/upscale tool the user runs on these
+// clips after upload rejects anything below 24fps outright, and the
+// user's own "Master Recipe" export spec calls for 30 or 60fps (never
+// 720p/below-24fps) on data videos specifically, so numbers stay legible.
+const CLIP_FPS = 30;
 const FONT_PATH = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf";
 
 // Crop fractions below are measured directly from the real rendered layout
@@ -120,6 +121,7 @@ function deriveColor(text) {
 // cutting mid-word.
 const OVERLAY_FONTSIZE = 42;
 const OVERLAY_MAX_CHARS = 36;
+const OVERLAY_FADE_S = 0.25; // fade-in duration at each beat's entrance, not its own trim/hold time
 
 function truncateForOverlay(text) {
   const upper = text.toUpperCase();
@@ -275,7 +277,15 @@ function buildFilterComplex(arc) {
     // top of the 1920px-tall canvas rather than the previous bottom-anchor.
     // Color comes from this beat's own derived sentiment (arc[i].color),
     // not a fixed per-panel value.
-    return `drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=${arc[i].color}:fontsize=${OVERLAY_FONTSIZE}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=120:enable='between(t,${k.start},${k.end})'`;
+    //
+    // alpha ramps 0->1 over the first OVERLAY_FADE_S of each beat's own
+    // window (verified locally: real ffmpeg render, brightness ramps
+    // 0->102->203->255 across the fade then holds) so text fades in at
+    // scene entrance rather than hard-cutting in; enable='between(t,...)'
+    // still gates visibility to exactly the beat's own start/end, so the
+    // overlay's duration continues to match the scene's duration exactly.
+    const alphaExpr = `if(lt(t-${k.start},${OVERLAY_FADE_S}),(t-${k.start})/${OVERLAY_FADE_S},1)`;
+    return `drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=${arc[i].color}:fontsize=${OVERLAY_FONTSIZE}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=120:alpha='${alphaExpr}':enable='between(t,${k.start},${k.end})'`;
   });
 
   const drawtextChain = drawtextStages.length ? `[vconcat]${drawtextStages.join(",")}[vout]` : "[vconcat]copy[vout]";
