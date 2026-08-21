@@ -139,13 +139,19 @@ function truncateForOverlay(text) {
 // index.html's splitLabelValue() already relies on for these fields - take
 // the detail half, drop an overlong label prefix, and fall back to a
 // neutral (non-claim) line if a field is genuinely empty rather than
-// inventing content.
-function deriveLine(items, fallback) {
+// inventing content. Kept separate from deriveLine (which additionally
+// truncates/uppercases for the on-screen caption) so buildAnalystNarration
+// below can read the same real detail text in full, natural sentences
+// instead of a caption-truncated fragment.
+function extractDetail(items, fallback) {
   const raw = Array.isArray(items) ? items.find((s) => typeof s === "string" && s.trim()) : null;
   if (!raw) return fallback;
   const idx = raw.indexOf(":");
-  const text = (idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim();
-  return truncateForOverlay(text);
+  return (idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim();
+}
+
+function deriveLine(items, fallback) {
+  return truncateForOverlay(extractDetail(items, fallback));
 }
 
 // The BTC-chart and Direction beats used to be an arbitrary truncated line
@@ -207,15 +213,39 @@ function deriveNarrativeArc(signal, evidence) {
   ];
 }
 
-// Voiceover narration - reads the exact same beat text already on screen
-// (arc[].text), in the same order, so the spoken script is never a
-// separate/invented line: it's the identical real-evidence text used for
-// the overlays, just spoken aloud instead of only displayed. Joined into
-// one sentence-per-beat script rather than four separate TTS calls, so
-// pacing/pauses between clauses sound natural instead of four disjoint
-// clips stitched together.
-function buildNarrationScript(arc) {
-  return arc.map((beat) => beat.text.trim().replace(/\.+$/, "")).join(". ") + ".";
+// Voiceover narration, phrased as an analyst reading a report rather than
+// reciting the terse ALL-CAPS overlay fragments verbatim ("ETF NET
+// OUTFLOWS 385M" reads fine on screen, but sounds robotic spoken aloud).
+// Built from the exact same real sources as the overlays - extractDetail's
+// untruncated signal text and readOnScreenEvidence's real DOM numbers -
+// just assembled into natural sentences instead of caption fragments. No
+// number, direction, or claim here that isn't already backed by the same
+// real data the on-screen beats use; this only changes phrasing, never
+// invents content a caption-truncated version wouldn't already contain.
+function buildAnalystNarration(signal, evidence) {
+  const etfDetail = extractDetail(signal.etf_flows, "no notable ETF flow data available");
+  const narrativeDetail = extractDetail(signal.x_narratives, "no notable narrative shift reported");
+  const sentences = [`Institutional flows: ${etfDetail}.`];
+
+  if (evidence.btcPrice && evidence.btcPrice !== "DATA UNAVAILABLE") {
+    const changeNum = parseFloat(evidence.btcChange);
+    const hasChange = Number.isFinite(changeNum);
+    const trend = evidence.trend && evidence.trend !== "—" ? evidence.trend.toLowerCase() : null;
+    const volume = evidence.volume && evidence.volume !== "—" ? evidence.volume.toLowerCase() : null;
+    let priceSentence = "Bitcoin is trading";
+    if (hasChange) priceSentence += ` ${changeNum >= 0 ? "up" : "down"} ${Math.abs(changeNum).toFixed(2)} percent`;
+    if (trend) priceSentence += `, with trend reading ${trend}`;
+    if (volume) priceSentence += ` and volume ${volume}`;
+    sentences.push(`${priceSentence}.`);
+  }
+
+  sentences.push(`On the narrative side, ${narrativeDetail}.`);
+
+  if (evidence.direction) {
+    sentences.push(`Overall, market direction reads ${evidence.direction.toLowerCase()}.`);
+  }
+
+  return sentences.join(" ");
 }
 
 const ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech";
@@ -381,6 +411,7 @@ async function readOnScreenEvidence(page) {
     btcPrice: document.getElementById("mb-price-BTC")?.textContent?.trim() || null,
     btcChange: document.getElementById("mb-change-BTC")?.textContent?.trim().replace(/[+%]/g, "") || null,
     trend: document.getElementById("trend-value")?.textContent?.trim() || null,
+    volume: document.getElementById("volume-value")?.textContent?.trim() || null,
     direction: document.querySelector(".term-direction-value")?.textContent?.trim() || null,
   }));
 }
@@ -550,12 +581,13 @@ export async function generateAndUploadClip(signal) {
 
     const arc = deriveNarrativeArc(signal, evidence);
 
-    // Voiceover reads the exact same on-screen beat text (buildNarrationScript
-    // joins arc[].text verbatim) - never a separately-written script. Best
-    // effort: a TTS failure/missing API key must not block the rest of the
-    // clip, since the visual pipeline is fully functional without it.
+    // Voiceover reads the same real signal/evidence as the overlays, just
+    // phrased as analyst-report sentences (buildAnalystNarration) rather
+    // than the terse ALL-CAPS caption fragments. Best effort: a TTS
+    // failure/missing API key must not block the rest of the clip, since
+    // the visual pipeline is fully functional without it.
     let narrationPath = null;
-    const narrationAudio = await synthesizeVoiceover(buildNarrationScript(arc));
+    const narrationAudio = await synthesizeVoiceover(buildAnalystNarration(signal, evidence));
     if (narrationAudio) {
       narrationPath = path.join(frameDir, "narration.mp3");
       await writeFile(narrationPath, narrationAudio);
