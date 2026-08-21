@@ -206,78 +206,83 @@ function deriveNarrativeArc(signal, evidence) {
   ];
 }
 
-// Sentiment tag appended to a real signal line - reuses the exact same
+// Sentiment clause appended to a real signal line - reuses the exact same
 // BULLISH_WORDS/BEARISH_WORDS keyword match deriveColor already applies
-// for on-screen color-coding, just spoken as words instead of a color.
-// Restates a classification already made from the real text; adds no new
-// inference on top of it, and stays silent (returns null) rather than
-// guessing when neither keyword set matches.
-function sentimentTag(text) {
-  if (BULLISH_WORDS.test(text)) return "a constructive signal";
-  if (BEARISH_WORDS.test(text)) return "a cautious signal";
+// for on-screen color-coding, just spoken as an active verb phrase instead
+// of a color. Restates a classification already made from the real text;
+// adds no new inference on top of it, and stays silent (returns null)
+// rather than guessing when neither keyword set matches. Deliberately
+// doesn't claim trend history ("snapping a streak", "reclaiming a level")
+// since this pipeline has no prior-period data to back that kind of claim -
+// only the current signal's own real classification.
+function sentimentClause(text) {
+  if (BULLISH_WORDS.test(text)) return "reinforcing bullish positioning";
+  if (BEARISH_WORDS.test(text)) return "pressuring sentiment";
   return null;
 }
 
-// Magnitude framing for the one real number we have to a precise decimal
-// (evidence.btcChange) - a deterministic threshold on the actual percentage,
-// not a guess. Never used for the ETF/narrative lines, since those are free
-// text without a parseable magnitude to classify.
-function describeMagnitude(pct) {
+// Active verb phrase for the one real number we have to a precise decimal
+// (evidence.btcChange) - a deterministic threshold on the actual
+// percentage and its real sign, not a guess or invented trend claim.
+function verbForChange(pct) {
   const abs = Math.abs(pct);
-  if (abs >= 3) return "a sharp";
-  if (abs >= 1) return "a notable";
-  if (abs >= 0.3) return "a modest";
-  return "a slight";
+  const up = pct >= 0;
+  if (abs >= 3) return up ? "surged" : "plunged";
+  if (abs >= 1) return up ? "climbed" : "slipped";
+  if (abs >= 0.3) return up ? "edged higher" : "eased lower";
+  return "held steady";
 }
 
-// Voiceover narration - storytelling tone/pacing (conversational lead-ins,
-// "keep watching"-style framing, varied sentence shapes) modeled on a
-// reference script the user supplied, but with every specific number/claim
-// in that reference (a named firm's ETF holdings, a Fear & Greed index
-// reading, EMA support levels, SOL/XRP flow direction) dropped rather than
-// hardcoded - this pipeline has no real, verifiable source for any of
-// those, and copying them in as permanent narration would fabricate
-// today's snapshot as if it were always true. Every fact spoken here is
-// still either a deterministic function of (magnitude, from the real %
-// change) or a direct restatement of (sentiment tags reuse deriveColor's
-// own keyword classification; "mixed"/"neutral"/"low volume" phrasing
-// restates the literal real value) something already in signal/evidence -
-// same guarantee as before, just told with more narrative color.
+// Voiceover narration - Hook/Detail/Context/Close pacing (one tight,
+// active-verb sentence per beat, modeled on a scriptwriting template the
+// user supplied) with every specific number/claim from either that
+// template or an earlier reference script (a named firm's ETF holdings, a
+// Fear & Greed index reading, EMA support levels, SOL/XRP flow direction,
+// "snapped its streak"-style trend-history claims) deliberately left out -
+// this pipeline has no real, verifiable source for any of those, and
+// copying them in would fabricate a one-time snapshot as permanent
+// narration. Every fact spoken here is still either a deterministic
+// function of (verbForChange's real % and sign) or a direct restatement of
+// (sentimentClause reuses deriveColor's own keyword classification;
+// "mixed"/"neutral"/"low volume" phrasing restates the literal real value)
+// something already in signal/evidence.
 function buildAnalystNarration(signal, evidence) {
   const etfDetail = extractDetail(signal.etf_flows, "no notable ETF flow data available");
   const narrativeDetail = extractDetail(signal.x_narratives, "no notable narrative shift reported");
   const sentences = [];
 
-  const etfTag = sentimentTag(etfDetail);
-  sentences.push(`Institutional momentum in focus: ${etfDetail}${etfTag ? ` — ${etfTag} for positioning` : ""}.`);
+  // Hook: what happened, in one line.
+  const etfClause = sentimentClause(etfDetail);
+  sentences.push(`Institutional flows in focus: ${etfDetail}${etfClause ? `, ${etfClause}` : ""}.`);
 
+  // Detail: the real price action, in active verbs.
   if (evidence.btcPrice && evidence.btcPrice !== "DATA UNAVAILABLE") {
     const changeNum = parseFloat(evidence.btcChange);
     const hasChange = Number.isFinite(changeNum);
     const trend = evidence.trend && evidence.trend !== "—" ? evidence.trend.toLowerCase() : null;
     const volume = evidence.volume && evidence.volume !== "—" ? evidence.volume.toLowerCase() : null;
-    let priceSentence = "Technically, Bitcoin is showing";
+    let priceSentence = "Bitcoin";
     priceSentence += hasChange
-      ? ` ${describeMagnitude(changeNum)} ${Math.abs(changeNum).toFixed(2)} percent move to the ${changeNum >= 0 ? "upside" : "downside"}`
-      : " no clear price move to report";
+      ? ` ${verbForChange(changeNum)}, now ${Math.abs(changeNum).toFixed(2)} percent ${changeNum >= 0 ? "higher" : "lower"}`
+      : " is holding without a clear move to report";
     if (trend) priceSentence += `, trend reading ${trend}`;
     sentences.push(`${priceSentence}.`);
+    // Context: what the volume reading means for conviction.
     if (volume === "low") {
-      sentences.push("Volume is light for now, so keep watching for the next move to confirm direction.");
+      sentences.push("Volume is thin, so this move still lacks conviction.");
     } else if (volume) {
-      sentences.push(`Volume is running ${volume}, worth watching as this plays out.`);
+      sentences.push(`Volume is running ${volume}, adding weight behind the move.`);
     }
   }
 
-  const narrativeTag = sentimentTag(narrativeDetail);
-  sentences.push(
-    `Here's what's shaping the conversation: ${narrativeDetail}${narrativeTag ? ` — ${narrativeTag}` : ""}.`
-  );
+  const narrativeClause = sentimentClause(narrativeDetail);
+  sentences.push(`On the narrative side, ${narrativeDetail}${narrativeClause ? `, ${narrativeClause}` : ""}.`);
 
+  // Close: the takeaway.
   if (evidence.direction) {
     const dir = evidence.direction.toLowerCase();
-    let directionSentence = `Overall sentiment reads ${dir}`;
-    if (dir.includes("mixed")) directionSentence += " — the signals aren't aligned in either direction right now, so stay cautious";
+    let directionSentence = `Bottom line, sentiment reads ${dir}`;
+    if (dir.includes("mixed")) directionSentence += " — stay cautious until a clearer signal emerges";
     else if (dir.includes("bullish")) directionSentence += ", favoring further upside";
     else if (dir.includes("bearish")) directionSentence += ", favoring further downside";
     sentences.push(`${directionSentence}.`);
