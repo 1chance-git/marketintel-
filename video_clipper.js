@@ -2,12 +2,15 @@
 // Short-form vertical clip generator (Block 10)
 //
 // Renders a short (~12s) 1080x1920 vertical MP4 from the live dashboard,
-// narrated by an ElevenLabs voiceover and captioned with bold sans-serif
-// on-screen text, both built from the real Grok/Supabase signal that
-// triggered it - never fabricated/placeholder marketing copy. The two
-// channels complement rather than duplicate each other: captions show the
-// exact real data (numbers included), narration provides context in
-// active-verb sentences that deliberately never read those digits aloud.
+// narrated by an ElevenLabs voiceover built from the real Grok/Supabase
+// signal that triggered it - never fabricated/placeholder marketing copy.
+// No on-screen caption text - tried and reverted twice: even after fixing
+// every sync dimension found (per-beat timing, caption/narration color
+// match, institution-name match, audio/video concat drift), captions
+// still didn't reliably match the narration in production, and the
+// remaining gap is almost certainly ElevenLabs' own per-segment lead-in
+// silence before speech starts, which caption timing (tied to the audio
+// FILE's start, not word-level speech timestamps) can't correct for.
 // Runs as its own isolated Puppeteer + FFmpeg pipeline (separate local
 // server instance, separate browser) so it never contends with or
 // interferes with the main continuous RTMP broadcast in stream_engine.js.
@@ -152,8 +155,6 @@ function deriveColor(text) {
 // truncateForOverlay now backs up to the last whole word instead of
 // cutting mid-word.
 const OVERLAY_MAX_CHARS = 36;
-const OVERLAY_FONTSIZE = 42;
-const OVERLAY_FADE_S = 0.25; // fade-in duration at each beat's entrance, not its own trim/hold time
 
 function truncateForOverlay(text) {
   const upper = text.toUpperCase();
@@ -624,7 +625,7 @@ function formatClipDate(isoTimestamp) {
   return `${datePart.toUpperCase()} · ${timePart}`;
 }
 
-function buildFilterComplex(keyframes, arc, dateText) {
+function buildFilterComplex(keyframes, dateText) {
   // Per-keyframe branch, not a single time-varying crop: verified locally
   // (real ffmpeg 5.1.9 render, not assumed) that ffmpeg's crop filter only
   // evaluates its OWN OUTPUT w/h once at filter init - x/y can vary per
@@ -662,37 +663,23 @@ function buildFilterComplex(keyframes, arc, dateText) {
   });
   const concatStage = `${branchLabels.map((l) => `[${l}]`).join("")}concat=n=${keyframes.length}:v=1:a=0[vconcat0]`;
 
-  // Bold sans-serif on-screen captions, back after a brief narration-only
-  // period - the exact real data (numbers included) stays visible on
-  // screen even though the narration deliberately never reads those digits
-  // aloud (see stripNumbers/verbForChange), so the two channels complement
-  // rather than duplicate each other. Timed to keyframes' own real
-  // start/end - now driven by each beat's actual narration duration - so
-  // the caption for a beat is on screen for exactly as long as that beat's
-  // crop is, same guarantee as the audio sync.
-  const captionStages = arc.map((beat, i) => {
-    const k = keyframes[i];
-    const text = escapeDrawtext(beat.text);
-    // alpha ramps 0->1 over the first OVERLAY_FADE_S of each beat's own
-    // window (verified previously via real ffmpeg render: brightness ramps
-    // smoothly then holds) so text fades in at scene entrance rather than
-    // hard-cutting in; enable='between(t,...)' still gates visibility to
-    // exactly the beat's own start/end.
-    const alphaExpr = `if(lt(t-${k.start},${OVERLAY_FADE_S}),(t-${k.start})/${OVERLAY_FADE_S},1)`;
-    const inLabel = i === 0 ? "vconcat0" : `vcap${i - 1}`;
-    const outLabel = `vcap${i}`;
-    return `[${inLabel}]drawtext=fontfile=${FONT_PATH}:text='${text}':expansion=none:fontcolor=${beat.color}:fontsize=${OVERLAY_FONTSIZE}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=120:alpha='${alphaExpr}':enable='between(t,${k.start},${k.end})'[${outLabel}]`;
-  });
-  const lastCaptionLabel = captionStages.length ? `vcap${captionStages.length - 1}` : "vconcat0";
-
-  // Small persistent date stamp (the real signal timestamp, never
-  // fabricated/current-time) shown for the whole clip, layered on top of
-  // the per-beat captions.
+  // No per-beat on-screen captions - tried and reverted twice this project:
+  // even after fixing every sync dimension found (dynamic per-beat timing,
+  // caption/narration color match, caption/narration institution-name
+  // match, audio/video concat drift), captions still didn't reliably match
+  // the narration in production. The remaining gap is almost certainly
+  // structural, not a code bug - ElevenLabs' TTS audio for each segment
+  // very likely has its own internal lead-in silence before speech
+  // actually starts, which a caption timed to the segment FILE's start
+  // (not to word-level speech timestamps, which ElevenLabs doesn't expose
+  // here) can't account for. Narration alone carries the same real
+  // information reliably; the one exception kept is the small persistent
+  // date stamp below, which has no per-beat timing to get wrong.
   const dateStage = dateText
-    ? `[${lastCaptionLabel}]drawtext=fontfile=${FONT_PATH}:text='${escapeDrawtext(dateText)}':expansion=none:fontcolor=white@0.85:fontsize=26:borderw=2:bordercolor=black:x=w-text_w-24:y=h-text_h-40[vout]`
-    : `[${lastCaptionLabel}]copy[vout]`;
+    ? `[vconcat0]drawtext=fontfile=${FONT_PATH}:text='${escapeDrawtext(dateText)}':expansion=none:fontcolor=white@0.85:fontsize=26:borderw=2:bordercolor=black:x=w-text_w-24:y=h-text_h-40[vout]`
+    : "[vconcat0]copy[vout]";
 
-  return [`[0:v]${splitStage}`, ...branchStages, concatStage, ...captionStages, dateStage].join(";\n");
+  return [`[0:v]${splitStage}`, ...branchStages, concatStage, dateStage].join(";\n");
 }
 
 // Reads the exact numbers/labels the dashboard itself has already computed
@@ -812,7 +799,7 @@ async function captureFramesForKeyframes(page, frameDir, keyframes) {
   }
 }
 
-function renderVideo(frameDir, outputPath, narrationPath, keyframes, arc, dateText) {
+function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText) {
   return new Promise((resolve, reject) => {
     const durationS = keyframes[keyframes.length - 1].end;
     // Real ElevenLabs narration when available, silent track otherwise -
@@ -832,7 +819,7 @@ function renderVideo(frameDir, outputPath, narrationPath, keyframes, arc, dateTe
       "-framerate", String(CLIP_FPS),
       "-i", path.join(frameDir, "frame_%05d.jpg"),
       ...audioInputArgs,
-      "-filter_complex", buildFilterComplex(keyframes, arc, dateText),
+      "-filter_complex", buildFilterComplex(keyframes, dateText),
       "-map", "[vout]", "-map", "1:a:0", "-af", "apad",
       // tune=stillimage + a lower CRF (higher quality/bitrate) for
       // graphics-first rendering - this content is flat-color dashboard
@@ -951,7 +938,7 @@ export async function generateAndUploadClip(signal) {
 
     const outputPath = path.join(frameDir, "clip.mp4");
     const dateText = formatClipDate(signal.timestamp);
-    await renderVideo(frameDir, outputPath, narrationPath, keyframes, arc, dateText);
+    await renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText);
     console.log("[RENDER COMPLETE]");
 
     const videoBuffer = await readFile(outputPath);
