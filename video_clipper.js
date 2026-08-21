@@ -182,8 +182,21 @@ function extractDetail(items, fallback) {
   return (idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim();
 }
 
+// Same institution-naming preference as buildAnalystNarrationSegments
+// (extractInstitutions/joinNames, defined below) - so the on-screen
+// caption and the spoken narration for the same beat always tell the same
+// story. Before this, the caption showed the raw truncated signal text
+// (which could include a bare fund ticker like "GBTC") while the
+// narration - once it started naming real institutions - could say
+// "Grayscale" for the exact same beat, a real mismatch between what's
+// shown and what's said.
 function deriveLine(items, fallback) {
-  return truncateForOverlay(extractDetail(items, fallback));
+  const raw = extractDetail(items, fallback);
+  const institutions = extractInstitutions(raw);
+  if (institutions.length) {
+    return truncateForOverlay(joinNames(institutions));
+  }
+  return truncateForOverlay(raw);
 }
 
 // The BTC-chart and Direction beats used to be an arbitrary truncated line
