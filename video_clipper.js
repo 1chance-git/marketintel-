@@ -62,17 +62,19 @@ const ROTATOR_CROP = "w='iw*0.32':h='ih*0.50':x='iw*0.68':y='ih*0.117'";
 // tight crop on the dashboard's own TREND/VOLUME badges and EMA/VWAP
 // legend instead - the same real-evidence numbers already backing
 // buildChartLine's overlay text, just showing the source pixels for them
-// too. Derived from CSS layout math (.chart-header 58px + border,
-// #rotation-indicator 18px + border, #chart-badges 16px + border, stacked
-// above #chart-area, whose own top was independently measured at y=176
-// via getBoundingClientRect() in production - so this panel's top is
-// 176 - 95 = 81px) - centered/narrowed horizontally to zoom in on the
-// badge/legend text rather than the full-width panel. Not yet verified
-// against a real getBoundingClientRect() the way CHART_CROP eventually
-// was - __mktChartDebug now reports headerRect/rotationIndicatorRect/
-// badgesRect/legendRect so this can be tightened further from real
-// numbers if the first render is off.
-const INFO_CROP = "w='iw*0.39':h='ih*0.16':x='iw*0.144':y='ih*0.1125'";
+// too.
+//
+// A first attempt centered this crop on #chart-badges/#chart-legend's own
+// container rects (full-width flex rows) and caught only empty flex space
+// plus the header's right-aligned price bleeding in from above - those
+// containers' rects aren't where the left-aligned text actually sits.
+// __mktChartDebug now unions the real .chart-badge-label/.chart-badge-
+// value/.legend-item elements' own getBoundingClientRect()s, which
+// returned {x:14, y:162.5, width:145, height:29.5} in production on the
+// 1280x720 source - i.e. the text spans x:14-159, y:162.5-192. This crop
+// is that real bbox plus ~18px padding on each side (x:0-177, y:144.5-210),
+// converted to iw*/ih* fractions.
+const INFO_CROP = "w='iw*0.1383':h='ih*0.091':x=0:y='ih*0.2007'";
 
 // Also doubles as a 4-beat narrative arc (setup -> turning point ->
 // confirmation -> outcome), matching the pacing style of a reference clip -
