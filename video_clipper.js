@@ -276,6 +276,57 @@ function stripNumbers(text) {
     .trim();
 }
 
+// Real, fixed real-world facts (which firm issues which spot-Bitcoin-ETF
+// ticker) - same category as FONT_PATH or the ElevenLabs voice ID: used to
+// interpret real signal text, never to invent a claim about market
+// conditions. Lets narration name the actual institution moving money
+// ("BlackRock", "Grayscale") instead of reading a bare fund ticker
+// ("IBIT", "GBTC") a listener has no context for.
+const ETF_TICKER_TO_ISSUER = {
+  IBIT: "BlackRock",
+  GBTC: "Grayscale",
+  FBTC: "Fidelity",
+  ARKB: "ARK Invest",
+  BITB: "Bitwise",
+  BRRR: "Valkyrie",
+  EZBC: "Franklin Templeton",
+  HODL: "VanEck",
+  BTCO: "Invesco",
+  BTCW: "WisdomTree",
+};
+// Known institution/desk names that might appear directly in real signal
+// text (not just via a fund ticker) - matched case-insensitively.
+const KNOWN_INSTITUTIONS = [
+  "BlackRock", "Grayscale", "Fidelity", "ARK Invest", "Bitwise", "Valkyrie",
+  "Franklin Templeton", "Invesco", "WisdomTree", "Jane Street", "Citadel",
+  "Susquehanna", "Cantor Fitzgerald", "JPMorgan", "Goldman Sachs",
+  "Jump Trading", "DRW", "Virtu",
+];
+
+// Extracts the real institution names actually present in a real signal
+// line - either named directly, or via a well-known fund ticker mapped to
+// its real issuer (ETF_TICKER_TO_ISSUER). Never invents a name that isn't
+// actually in the text; returns [] if none match, so the caller falls back
+// to generic phrasing rather than guessing who was involved.
+function extractInstitutions(text) {
+  const found = new Set();
+  for (const name of KNOWN_INSTITUTIONS) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`\\b${escaped}\\b`, "i").test(text)) found.add(name);
+  }
+  for (const [ticker, issuer] of Object.entries(ETF_TICKER_TO_ISSUER)) {
+    if (new RegExp(`\\b${ticker}\\b`).test(text)) found.add(issuer);
+  }
+  return [...found];
+}
+
+function joinNames(names) {
+  if (names.length === 0) return "";
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
 // Voiceover narration - one segment per KEYFRAMES beat (Hook/Detail/
 // Context/Close, modeled on a scriptwriting template the user supplied),
 // synthesized and timed separately per beat rather than one continuous
@@ -296,32 +347,46 @@ function stripNumbers(text) {
 // classification; "mixed"/"neutral"/"low volume" phrasing restates the
 // literal real value) something already in signal/evidence.
 function buildAnalystNarrationSegments(signal, evidence) {
-  const etfDetail = stripNumbers(extractDetail(signal.etf_flows, "no notable ETF flow data available"));
+  const etfRaw = extractDetail(signal.etf_flows, "no notable ETF flow data available");
   const narrativeDetail = stripNumbers(extractDetail(signal.x_narratives, "no notable narrative shift reported"));
 
-  // Beat 0 - Hook: what happened with institutional flows.
-  const etfClause = sentimentClause(etfDetail);
-  const etfSegment = `Institutional flows in focus: ${etfDetail}${etfClause ? `, ${etfClause}` : ""}.`;
+  // Beat 0 - Hook: WHO is actually moving money, not a bare fund ticker
+  // or leftover filler text. extractInstitutions only ever returns names
+  // it actually found in the real signal text (directly, or via a known
+  // ticker->issuer mapping) - falls back to the old stripped-text phrasing
+  // when no recognized institution is mentioned, rather than guessing one.
+  const institutions = extractInstitutions(etfRaw);
+  const etfClause = sentimentClause(etfRaw);
+  const etfSegment = institutions.length
+    ? `Institutional flows in focus: ${joinNames(institutions)} moving money in Bitcoin ETFs${etfClause ? `, ${etfClause}` : ""}.`
+    : `Institutional flows in focus: ${stripNumbers(etfRaw)}${etfClause ? `, ${etfClause}` : ""}.`;
 
   // Beat 1 - Detail: the real price action, in active verbs, no digits.
-  let priceSegment;
-  if (evidence.btcPrice && evidence.btcPrice !== "DATA UNAVAILABLE") {
-    const changeNum = parseFloat(evidence.btcChange);
-    const hasChange = Number.isFinite(changeNum);
-    const trend = evidence.trend && evidence.trend !== "—" ? evidence.trend.toLowerCase() : null;
-    const volume = evidence.volume && evidence.volume !== "—" ? evidence.volume.toLowerCase() : null;
-    priceSegment = "Bitcoin";
-    priceSegment += hasChange ? ` ${verbForChange(changeNum)}` : " is holding without a clear move to report";
-    if (trend) priceSegment += `, trend reading ${trend}`;
-    priceSegment += ".";
-    if (volume === "low") {
-      priceSegment += " Volume is thin, so this move still lacks conviction.";
-    } else if (volume) {
-      priceSegment += ` Volume is running ${volume}, adding weight behind the move.`;
-    }
+  // Trend/volume are read from separate DOM elements than the price
+  // ticker (see readOnScreenEvidence) and can be valid even when price
+  // itself briefly isn't - gating the whole beat on btcPrice meant a
+  // missing price alone silenced real trend/volume data that was actually
+  // available. Each piece now speaks independently of the others.
+  const trend = evidence.trend && evidence.trend !== "—" ? evidence.trend.toLowerCase() : null;
+  const volume = evidence.volume && evidence.volume !== "—" ? evidence.volume.toLowerCase() : null;
+  const hasPrice = evidence.btcPrice && evidence.btcPrice !== "DATA UNAVAILABLE";
+  const changeNum = parseFloat(evidence.btcChange);
+  const hasChange = hasPrice && Number.isFinite(changeNum);
+
+  const priceParts = [];
+  if (hasChange) {
+    priceParts.push(`Bitcoin ${verbForChange(changeNum)}${trend ? `, trend reading ${trend}` : ""}.`);
+  } else if (trend) {
+    priceParts.push(`Bitcoin's trend is reading ${trend}.`);
   } else {
-    priceSegment = "No live price data to report on Bitcoin right now.";
+    priceParts.push("No clear price trend to report on Bitcoin right now.");
   }
+  if (volume === "low") {
+    priceParts.push("Volume is thin, so this move still lacks conviction.");
+  } else if (volume) {
+    priceParts.push(`Volume is running ${volume}, adding weight behind the move.`);
+  }
+  const priceSegment = priceParts.join(" ");
 
   // Beat 2 - Context: what's shaping the broader narrative.
   const narrativeClause = sentimentClause(narrativeDetail);
