@@ -224,6 +224,20 @@ function buildShortMetadata({ signal, overlayText }) {
 
 const RESEND_API_URL = "https://api.resend.com/emails";
 
+// title below is real Grok/Supabase signal text - defense-in-depth against
+// it ever containing HTML-meaningful characters before it lands in an
+// email (currently only used in the subject header, but kept safe against
+// future html-body use too, and against how some mail clients render
+// subject lines).
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // Notifies the operator by email once a Short is uploaded so it can be
 // reviewed from a phone without opening YouTube Studio. Purely additive
 // like the OAuth-gated features above: without RESEND_API_KEY and
@@ -247,7 +261,7 @@ async function sendReviewNotification({ title, watchUrl }) {
       body: JSON.stringify({
         from: fromEmail,
         to: [toEmail],
-        subject: `🚨 REVIEW SHORT: ${title}`,
+        subject: `🚨 REVIEW SHORT: ${escapeHtml(title)}`,
         html: `
           <p>A new unlisted Short just finished uploading and is ready for review.</p>
           <p style="margin: 24px 0;">
