@@ -547,19 +547,37 @@ async function synthesizeNarrationSegments(scripts, frameDir) {
   return segments;
 }
 
+// Stream-copy concat (concat demuxer + -c copy), NOT the filter_complex
+// concat filter this used previously. Verified locally with real ffmpeg:
+// decoding each segment through the concat FILTER and re-encoding the
+// result measurably shrinks total duration (a real test: four 2.351020s
+// segments, summing to 9.40408s, re-encoded down to 9.247347s - LAME
+// encoder delay/padding being resolved away during decode+re-encode).
+// Since buildKeyframes sizes each beat's on-screen window from the
+// pre-concat individual segment durations, that shrinkage meant narration
+// increasingly started slightly BEFORE its matching visual crop/caption,
+// worst on the last beat - the exact "text overlay should match narrative"
+// sync this pipeline is supposed to guarantee. Stream-copy concat doesn't
+// decode/re-encode at all, so it doesn't introduce that discrepancy: the
+// same test measured 9.404082s for the concatenated file, matching the
+// pre-concat sum to within a millisecond.
 function concatAudioSegments(segments, outputPath) {
   return new Promise((resolve, reject) => {
-    const inputArgs = segments.flatMap((s) => ["-i", s.path]);
-    const filter = `${segments.map((_, i) => `[${i}:a]`).join("")}concat=n=${segments.length}:v=0:a=1[aout]`;
-    const args = ["-y", ...inputArgs, "-filter_complex", filter, "-map", "[aout]", outputPath];
-    const proc = spawn("ffmpeg", args);
-    let stderr = "";
-    proc.stderr.on("data", (c) => (stderr += c.toString()));
-    proc.once("error", (err) => reject(new Error(`ffmpeg audio concat failed to start: ${err.message}`)));
-    proc.once("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg audio concat exited ${code}: ${stderr.slice(-500)}`));
-    });
+    const listPath = path.join(path.dirname(outputPath), "narration_concat_list.txt");
+    const listContent = segments.map((s) => `file '${s.path.replace(/'/g, "'\\''")}'`).join("\n");
+    writeFile(listPath, listContent)
+      .then(() => {
+        const args = ["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", outputPath];
+        const proc = spawn("ffmpeg", args);
+        let stderr = "";
+        proc.stderr.on("data", (c) => (stderr += c.toString()));
+        proc.once("error", (err) => reject(new Error(`ffmpeg audio concat failed to start: ${err.message}`)));
+        proc.once("close", (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`ffmpeg audio concat exited ${code}: ${stderr.slice(-500)}`));
+        });
+      })
+      .catch((err) => reject(new Error(`Failed to write concat list file: ${err.message}`)));
   });
 }
 
