@@ -1036,15 +1036,32 @@
         const r = el.getBoundingClientRect();
         return { x: r.x, y: r.y, width: r.width, height: r.height };
       };
-      const headerEl = document.querySelector(".chart-header");
-      const badgesEl = document.getElementById("chart-badges");
-      const legendEl = document.getElementById("chart-legend");
+      // #chart-badges/#chart-legend are full-width flex containers - their
+      // own rect is the whole row, not where the actual text sits (both
+      // are left-aligned near x=14, not centered). A first crop attempt
+      // centered on the container rect's midpoint caught only empty flex
+      // space and clipped the header's right-aligned price instead - so
+      // this measures the real text elements directly and unions their
+      // rects into one tight bounding box, rather than trusting the
+      // container rect as a proxy for where the visible glyphs are.
+      const textEls = [
+        ...document.querySelectorAll("#chart-badges .chart-badge-label, #chart-badges .chart-badge-value"),
+        ...document.querySelectorAll("#chart-legend .legend-item"),
+      ];
+      const rects = textEls.map((el) => el.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0);
+      let textBBox = null;
+      if (rects.length) {
+        const left = Math.min(...rects.map((r) => r.x));
+        const top = Math.min(...rects.map((r) => r.y));
+        const right = Math.max(...rects.map((r) => r.x + r.width));
+        const bottom = Math.max(...rects.map((r) => r.y + r.height));
+        textBBox = { x: left, y: top, width: right - left, height: bottom - top };
+      }
       return {
         candleCount: candleData.BTC.length,
-        headerRect: rectOf(headerEl),
-        rotationIndicatorRect: rectOf(document.getElementById("rotation-indicator")),
-        badgesRect: rectOf(badgesEl),
-        legendRect: rectOf(legendEl),
+        badgesRect: rectOf(document.getElementById("chart-badges")),
+        legendRect: rectOf(document.getElementById("chart-legend")),
+        textBBox,
       };
     };
 
