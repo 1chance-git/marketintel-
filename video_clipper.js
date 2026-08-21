@@ -230,50 +230,54 @@ function describeMagnitude(pct) {
   return "a slight";
 }
 
-// Voiceover narration, phrased as an analyst reading a report with real
-// context rather than reciting numbers/fragments literally. Built from the
-// exact same real sources as the overlays used to be - extractDetail's
-// untruncated signal text and readOnScreenEvidence's real DOM numbers -
-// but now adds interpretive framing on top: magnitude (from the real %
-// change), sentiment tags (from the same keyword classification deriveColor
-// already uses), and a literal restatement of what "mixed"/"neutral"/"low
-// volume" mean. No causality or prediction is ever added - only what's a
-// deterministic function of, or a direct restatement of, real data already
-// in signal/evidence.
+// Voiceover narration - storytelling tone/pacing (conversational lead-ins,
+// "keep watching"-style framing, varied sentence shapes) modeled on a
+// reference script the user supplied, but with every specific number/claim
+// in that reference (a named firm's ETF holdings, a Fear & Greed index
+// reading, EMA support levels, SOL/XRP flow direction) dropped rather than
+// hardcoded - this pipeline has no real, verifiable source for any of
+// those, and copying them in as permanent narration would fabricate
+// today's snapshot as if it were always true. Every fact spoken here is
+// still either a deterministic function of (magnitude, from the real %
+// change) or a direct restatement of (sentiment tags reuse deriveColor's
+// own keyword classification; "mixed"/"neutral"/"low volume" phrasing
+// restates the literal real value) something already in signal/evidence -
+// same guarantee as before, just told with more narrative color.
 function buildAnalystNarration(signal, evidence) {
   const etfDetail = extractDetail(signal.etf_flows, "no notable ETF flow data available");
   const narrativeDetail = extractDetail(signal.x_narratives, "no notable narrative shift reported");
   const sentences = [];
 
   const etfTag = sentimentTag(etfDetail);
-  sentences.push(`Starting with institutional flows: ${etfDetail}${etfTag ? ` — ${etfTag} for positioning` : ""}.`);
+  sentences.push(`Institutional momentum in focus: ${etfDetail}${etfTag ? ` — ${etfTag} for positioning` : ""}.`);
 
   if (evidence.btcPrice && evidence.btcPrice !== "DATA UNAVAILABLE") {
     const changeNum = parseFloat(evidence.btcChange);
     const hasChange = Number.isFinite(changeNum);
     const trend = evidence.trend && evidence.trend !== "—" ? evidence.trend.toLowerCase() : null;
     const volume = evidence.volume && evidence.volume !== "—" ? evidence.volume.toLowerCase() : null;
-    let priceSentence = "Bitcoin is showing";
+    let priceSentence = "Technically, Bitcoin is showing";
     priceSentence += hasChange
       ? ` ${describeMagnitude(changeNum)} ${Math.abs(changeNum).toFixed(2)} percent move to the ${changeNum >= 0 ? "upside" : "downside"}`
       : " no clear price move to report";
-    const context = [trend ? `trend reading ${trend}` : null, volume ? `volume ${volume}` : null].filter(Boolean).join(" and ");
-    if (context) {
-      priceSentence += `, with ${context}`;
-      if (trend === "neutral" && volume === "low") {
-        priceSentence += " — suggesting price action hasn't found strong conviction either way";
-      }
-    }
+    if (trend) priceSentence += `, trend reading ${trend}`;
     sentences.push(`${priceSentence}.`);
+    if (volume === "low") {
+      sentences.push("Volume is light for now, so keep watching for the next move to confirm direction.");
+    } else if (volume) {
+      sentences.push(`Volume is running ${volume}, worth watching as this plays out.`);
+    }
   }
 
   const narrativeTag = sentimentTag(narrativeDetail);
-  sentences.push(`On the narrative side, ${narrativeDetail}${narrativeTag ? `, ${narrativeTag}` : ""}.`);
+  sentences.push(
+    `Here's what's shaping the conversation: ${narrativeDetail}${narrativeTag ? ` — ${narrativeTag}` : ""}.`
+  );
 
   if (evidence.direction) {
     const dir = evidence.direction.toLowerCase();
-    let directionSentence = `Putting it together, market direction reads ${dir}`;
-    if (dir.includes("mixed")) directionSentence += ", meaning the signals aren't aligned in either direction right now";
+    let directionSentence = `Overall sentiment reads ${dir}`;
+    if (dir.includes("mixed")) directionSentence += " — the signals aren't aligned in either direction right now, so stay cautious";
     else if (dir.includes("bullish")) directionSentence += ", favoring further upside";
     else if (dir.includes("bearish")) directionSentence += ", favoring further downside";
     sentences.push(`${directionSentence}.`);
