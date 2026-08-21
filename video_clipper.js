@@ -28,6 +28,7 @@ const OUTPUT_HEIGHT = 1920;
 // user's own "Master Recipe" export spec calls for 30 or 60fps (never
 // 720p/below-24fps) on data videos specifically, so numbers stay legible.
 const CLIP_FPS = 30;
+const FONT_PATH = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf";
 
 // Crop fractions below are measured directly from the real rendered layout
 // via getBoundingClientRect() at the 1280x720 capture viewport (not
@@ -523,7 +524,37 @@ function concatAudioSegments(segments, outputPath) {
   });
 }
 
-function buildFilterComplex(keyframes) {
+// Inside a single-quoted FFmpeg filter argument, backslash is NOT an
+// escape character in the intuitive sense, and the textbook "close quote,
+// escaped literal quote, reopen quote" technique was previously verified
+// (real ffmpeg render, when this pipeline still had per-beat drawtext) to
+// corrupt every later quoted clause in the same filter_complex. Dropping
+// the apostrophe outright is simpler and equally safe. `%` is deliberately
+// NOT escaped - expansion=none disables drawtext's %{...} text_expansion
+// entirely, so a raw `%` is always literal.
+function escapeDrawtext(text) {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "");
+}
+
+// The real signal timestamp (Supabase's own value, not the current
+// wall-clock time) formatted for an unobtrusive corner stamp - a viewer
+// has no other way to tell when a clip's data is from once all other
+// on-screen text was removed. Returns null (no overlay at all) rather
+// than a fabricated/placeholder date if the real timestamp is missing or
+// unparseable.
+function formatClipDate(isoTimestamp) {
+  if (!isoTimestamp) return null;
+  const d = new Date(isoTimestamp);
+  if (Number.isNaN(d.getTime())) return null;
+  const datePart = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+  const timePart = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" });
+  return `${datePart.toUpperCase()} · ${timePart}`;
+}
+
+function buildFilterComplex(keyframes, dateText) {
   // Per-keyframe branch, not a single time-varying crop: verified locally
   // (real ffmpeg 5.1.9 render, not assumed) that ffmpeg's crop filter only
   // evaluates its OWN OUTPUT w/h once at filter init - x/y can vary per
@@ -559,14 +590,19 @@ function buildFilterComplex(keyframes) {
       `[c${i}bgblur][c${i}fgscaled]overlay=(W-w)/2:(H-h)/2,setsar=1[${branchLabels[i]}]`
     );
   });
-  // No on-screen text overlay - the ElevenLabs narration (buildAnalystNarrationSegments)
-  // now carries the same real facts audibly instead, so a redundant caption
-  // would just duplicate what's already spoken. concat's output is renamed
-  // straight to [vout] rather than [vconcat] since there's no drawtext pass
-  // left to chain after it.
-  const concatStage = `${branchLabels.map((l) => `[${l}]`).join("")}concat=n=${keyframes.length}:v=1:a=0[vout]`;
+  // No per-beat text overlay - the ElevenLabs narration
+  // (buildAnalystNarrationSegments) carries the real facts audibly instead,
+  // so a redundant caption would just duplicate what's already spoken. The
+  // one exception is a small persistent date stamp (the real signal
+  // timestamp, not fabricated/current-time) shown for the whole clip - a
+  // viewer has no other way to tell when the data in a clip is from once
+  // all other on-screen text was removed.
+  const concatStage = `${branchLabels.map((l) => `[${l}]`).join("")}concat=n=${keyframes.length}:v=1:a=0[vconcat]`;
+  const dateStage = dateText
+    ? `[vconcat]drawtext=fontfile=${FONT_PATH}:text='${escapeDrawtext(dateText)}':expansion=none:fontcolor=white@0.85:fontsize=26:borderw=2:bordercolor=black:x=w-text_w-24:y=h-text_h-40[vout]`
+    : "[vconcat]copy[vout]";
 
-  return [`[0:v]${splitStage}`, ...branchStages, concatStage].join(";\n");
+  return [`[0:v]${splitStage}`, ...branchStages, concatStage, dateStage].join(";\n");
 }
 
 // Reads the exact numbers/labels the dashboard itself has already computed
@@ -662,7 +698,7 @@ async function captureFramesForKeyframes(page, frameDir, keyframes) {
   }
 }
 
-function renderVideo(frameDir, outputPath, narrationPath, keyframes) {
+function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText) {
   return new Promise((resolve, reject) => {
     const durationS = keyframes[keyframes.length - 1].end;
     // Real ElevenLabs narration when available, silent track otherwise -
@@ -682,7 +718,7 @@ function renderVideo(frameDir, outputPath, narrationPath, keyframes) {
       "-framerate", String(CLIP_FPS),
       "-i", path.join(frameDir, "frame_%05d.jpg"),
       ...audioInputArgs,
-      "-filter_complex", buildFilterComplex(keyframes),
+      "-filter_complex", buildFilterComplex(keyframes, dateText),
       "-map", "[vout]", "-map", "1:a:0", "-af", "apad",
       // tune=stillimage + a lower CRF (higher quality/bitrate) for
       // graphics-first rendering - this content is flat-color dashboard
@@ -800,7 +836,8 @@ export async function generateAndUploadClip(signal) {
     server = null;
 
     const outputPath = path.join(frameDir, "clip.mp4");
-    await renderVideo(frameDir, outputPath, narrationPath, keyframes);
+    const dateText = formatClipDate(signal.timestamp);
+    await renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText);
     console.log("[RENDER COMPLETE]");
 
     const videoBuffer = await readFile(outputPath);
