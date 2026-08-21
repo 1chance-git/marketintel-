@@ -119,9 +119,24 @@ function buildKeyframes(beatDurations) {
 const BULLISH_WORDS = /\b(bullish|risk-on|inflow|inflows|accumulation|rally|surge|breakout|upgrade|outperform)\b/i;
 const BEARISH_WORDS = /\b(bearish|risk-off|outflow|outflows|selloff|sell-off|decline|downgrade|underperform|dump)\b/i;
 
+// Classifies real text by which sentiment direction has MORE keyword
+// matches (not just "bullish checked first"), so a real mixed-sentiment
+// line like "BTC outflows offset by selective ETH inflows" is classified
+// by which side actually dominates the text rather than always winning on
+// whichever regex happens to be tested first. Ties (including zero/zero)
+// stay neutral - simple, deterministic keyword counting, no fuzzy matching.
+function classifySentiment(text) {
+  const bullishCount = (text.match(new RegExp(BULLISH_WORDS.source, "gi")) || []).length;
+  const bearishCount = (text.match(new RegExp(BEARISH_WORDS.source, "gi")) || []).length;
+  if (bullishCount > bearishCount) return "bullish";
+  if (bearishCount > bullishCount) return "bearish";
+  return "neutral";
+}
+
 function deriveColor(text) {
-  if (BULLISH_WORDS.test(text)) return "#00FF00";
-  if (BEARISH_WORDS.test(text)) return "#FF4444";
+  const sentiment = classifySentiment(text);
+  if (sentiment === "bullish") return "#00FF00";
+  if (sentiment === "bearish") return "#FF4444";
   return "#FFFFFF";
 }
 
@@ -240,8 +255,9 @@ function deriveNarrativeArc(signal, evidence) {
 // since this pipeline has no prior-period data to back that kind of claim -
 // only the current signal's own real classification.
 function sentimentClause(text) {
-  if (BULLISH_WORDS.test(text)) return "reinforcing bullish positioning";
-  if (BEARISH_WORDS.test(text)) return "pressuring sentiment";
+  const sentiment = classifySentiment(text);
+  if (sentiment === "bullish") return "reinforcing bullish positioning";
+  if (sentiment === "bearish") return "pressuring sentiment";
   return null;
 }
 
@@ -393,9 +409,15 @@ function buildAnalystNarrationSegments(signal, evidence) {
   }
   const priceSegment = priceParts.join(" ");
 
-  // Beat 2 - Context: what's shaping the broader narrative.
+  // Beat 2 - Context: what's shaping the broader narrative. Same
+  // extractInstitutions treatment as the ETF beat above - names a real
+  // institution/desk actually present in the narrative text when there is
+  // one, falling back to the stripped-text phrasing when there isn't.
+  const narrativeInstitutions = extractInstitutions(narrativeDetail);
   const narrativeClause = sentimentClause(narrativeDetail);
-  const narrativeSegment = `On the narrative side, ${narrativeDetail}${narrativeClause ? `, ${narrativeClause}` : ""}.`;
+  const narrativeSegment = narrativeInstitutions.length
+    ? `On the narrative side, ${joinNames(narrativeInstitutions)} in focus${narrativeClause ? `, ${narrativeClause}` : ""}.`
+    : `On the narrative side, ${narrativeDetail}${narrativeClause ? `, ${narrativeClause}` : ""}.`;
 
   // Beat 3 - Close: the takeaway.
   let directionSegment = "Overall sentiment is still forming, with no clear directional read yet.";
