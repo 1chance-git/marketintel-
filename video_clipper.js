@@ -78,14 +78,33 @@ const INFO_CROP = "w='iw*0.1383':h='ih*0.091':x=0:y='ih*0.2007'";
 // Also doubles as a 4-beat narrative arc (setup -> turning point ->
 // confirmation -> outcome), matching the pacing style of a reference clip -
 // but unlike that reference, the text filling each beat is always derived
-// live below (deriveNarrativeArc), never fixed/fabricated copy.
-const KEYFRAMES = [
-  { start: 0, end: 2.7, crop: ROTATOR_CROP, rotatorSlide: 0 }, // ETF / Institutional Flow
-  { start: 2.7, end: 5.5, crop: INFO_CROP, rotatorSlide: null }, // TREND/VOLUME + EMA/VWAP legend - not rotator content
-  { start: 5.5, end: 8.2, crop: ROTATOR_CROP, rotatorSlide: 2 }, // Narrative Shift
-  { start: 8.2, end: 11.0, crop: ROTATOR_CROP, rotatorSlide: 3 }, // Market Sentiment / Direction
-];
-const CLIP_DURATION_S = KEYFRAMES[KEYFRAMES.length - 1].end;
+// live below (deriveNarrativeArc), never fixed/fabricated copy. Crop and
+// rotator-slide assignment per beat is fixed; timing is not - each beat's
+// on-screen window is now driven by that beat's own real narration
+// duration (see buildKeyframes), so the clip's total length varies with
+// how much there actually is to say, rather than a fixed 11s regardless of
+// content.
+const BEAT_CROPS = [ROTATOR_CROP, INFO_CROP, ROTATOR_CROP, ROTATOR_CROP];
+const BEAT_ROTATOR_SLIDES = [0, null, 2, 3];
+// Fallback timing only - used when narration isn't available/fails
+// entirely (see synthesizeNarrationSegments's all-or-nothing behavior),
+// so the clip still has a sensible default pace with no real audio driving
+// it.
+const DEFAULT_BEAT_DURATIONS_S = [2.7, 2.8, 2.7, 2.8];
+
+// Builds the actual KEYFRAMES array for one clip from real per-beat
+// durations (either each beat's real synthesized narration length, or the
+// DEFAULT_BEAT_DURATIONS_S fallback) - replaces the old fixed-timing
+// module-level constant now that timing is content-driven instead of
+// hardcoded.
+function buildKeyframes(beatDurations) {
+  let t = 0;
+  return beatDurations.map((duration, i) => {
+    const start = t;
+    t += duration;
+    return { start, end: t, crop: BEAT_CROPS[i], rotatorSlide: BEAT_ROTATOR_SLIDES[i] };
+  });
+}
 
 // Color is derived from the real text's own sentiment, not a fixed
 // per-panel assignment - a bearish line never gets painted green just
@@ -221,9 +240,12 @@ function sentimentClause(text) {
   return null;
 }
 
-// Active verb phrase for the one real number we have to a precise decimal
-// (evidence.btcChange) - a deterministic threshold on the actual
-// percentage and its real sign, not a guess or invented trend claim.
+// Active verb phrase for the real % change and sign (evidence.btcChange) -
+// a deterministic threshold on the exact number, not a guess. The word
+// alone carries the magnitude; the digits themselves are never spoken
+// (narration constraint: numbers stay on no screen at all now that the
+// overlay is gone, so audio must convey magnitude qualitatively, not by
+// reading the figure back).
 function verbForChange(pct) {
   const abs = Math.abs(pct);
   const up = pct >= 0;
@@ -233,62 +255,90 @@ function verbForChange(pct) {
   return "held steady";
 }
 
-// Voiceover narration - Hook/Detail/Context/Close pacing (one tight,
-// active-verb sentence per beat, modeled on a scriptwriting template the
-// user supplied) with every specific number/claim from either that
+// Removes numeric literals (currency amounts, percentages, ranges, plain
+// numbers, and their attached units like "$385-390M" or "24h") from real
+// free-text signal fields before they're spoken. Narration must never read
+// a raw number aloud - only the real qualitative color the number sits
+// inside. Only strips digit-bearing tokens; any other real wording in the
+// same sentence ("led by GBTC redemptions") survives untouched, and
+// nothing is invented to replace what's removed - occasional minor
+// grammatical roughness (a dangling "over the last," where a number used
+// to sit) is an accepted tradeoff for a rule that's simple, deterministic,
+// and impossible to fabricate from, rather than running the real signal
+// text through a rewriting model.
+function stripNumbers(text) {
+  return text
+    .replace(/[$~]?\d[\d,.]*\s*-\s*[$~]?\d[\d,.]*\s*[%A-Za-z]*/g, "")
+    .replace(/[$~]?\d[\d,.]*\s*[%A-Za-z]*/g, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/^[,.\s]+|[,.\s]+$/g, "")
+    .trim();
+}
+
+// Voiceover narration - one segment per KEYFRAMES beat (Hook/Detail/
+// Context/Close, modeled on a scriptwriting template the user supplied),
+// synthesized and timed separately per beat rather than one continuous
+// pass, so each segment's real spoken duration can drive that beat's own
+// on-screen window (see buildKeyframes) instead of narration and visuals
+// only being loosely ordered the same way. Zero raw numbers are spoken -
+// stripNumbers removes any digit-bearing content from the real free-text
+// signal fields, and the price beat speaks verbForChange's word only, never
+// the percentage itself. Every specific number/claim from either that
 // template or an earlier reference script (a named firm's ETF holdings, a
 // Fear & Greed index reading, EMA support levels, SOL/XRP flow direction,
-// "snapped its streak"-style trend-history claims) deliberately left out -
-// this pipeline has no real, verifiable source for any of those, and
+// "snapped its streak"-style trend-history claims) is deliberately left
+// out - this pipeline has no real, verifiable source for any of those, and
 // copying them in would fabricate a one-time snapshot as permanent
 // narration. Every fact spoken here is still either a deterministic
-// function of (verbForChange's real % and sign) or a direct restatement of
-// (sentimentClause reuses deriveColor's own keyword classification;
-// "mixed"/"neutral"/"low volume" phrasing restates the literal real value)
-// something already in signal/evidence.
-function buildAnalystNarration(signal, evidence) {
-  const etfDetail = extractDetail(signal.etf_flows, "no notable ETF flow data available");
-  const narrativeDetail = extractDetail(signal.x_narratives, "no notable narrative shift reported");
-  const sentences = [];
+// function of (verbForChange's real sign/magnitude) or a direct
+// restatement of (sentimentClause reuses deriveColor's own keyword
+// classification; "mixed"/"neutral"/"low volume" phrasing restates the
+// literal real value) something already in signal/evidence.
+function buildAnalystNarrationSegments(signal, evidence) {
+  const etfDetail = stripNumbers(extractDetail(signal.etf_flows, "no notable ETF flow data available"));
+  const narrativeDetail = stripNumbers(extractDetail(signal.x_narratives, "no notable narrative shift reported"));
 
-  // Hook: what happened, in one line.
+  // Beat 0 - Hook: what happened with institutional flows.
   const etfClause = sentimentClause(etfDetail);
-  sentences.push(`Institutional flows in focus: ${etfDetail}${etfClause ? `, ${etfClause}` : ""}.`);
+  const etfSegment = `Institutional flows in focus: ${etfDetail}${etfClause ? `, ${etfClause}` : ""}.`;
 
-  // Detail: the real price action, in active verbs.
+  // Beat 1 - Detail: the real price action, in active verbs, no digits.
+  let priceSegment;
   if (evidence.btcPrice && evidence.btcPrice !== "DATA UNAVAILABLE") {
     const changeNum = parseFloat(evidence.btcChange);
     const hasChange = Number.isFinite(changeNum);
     const trend = evidence.trend && evidence.trend !== "—" ? evidence.trend.toLowerCase() : null;
     const volume = evidence.volume && evidence.volume !== "—" ? evidence.volume.toLowerCase() : null;
-    let priceSentence = "Bitcoin";
-    priceSentence += hasChange
-      ? ` ${verbForChange(changeNum)}, now ${Math.abs(changeNum).toFixed(2)} percent ${changeNum >= 0 ? "higher" : "lower"}`
-      : " is holding without a clear move to report";
-    if (trend) priceSentence += `, trend reading ${trend}`;
-    sentences.push(`${priceSentence}.`);
-    // Context: what the volume reading means for conviction.
+    priceSegment = "Bitcoin";
+    priceSegment += hasChange ? ` ${verbForChange(changeNum)}` : " is holding without a clear move to report";
+    if (trend) priceSegment += `, trend reading ${trend}`;
+    priceSegment += ".";
     if (volume === "low") {
-      sentences.push("Volume is thin, so this move still lacks conviction.");
+      priceSegment += " Volume is thin, so this move still lacks conviction.";
     } else if (volume) {
-      sentences.push(`Volume is running ${volume}, adding weight behind the move.`);
+      priceSegment += ` Volume is running ${volume}, adding weight behind the move.`;
     }
+  } else {
+    priceSegment = "No live price data to report on Bitcoin right now.";
   }
 
+  // Beat 2 - Context: what's shaping the broader narrative.
   const narrativeClause = sentimentClause(narrativeDetail);
-  sentences.push(`On the narrative side, ${narrativeDetail}${narrativeClause ? `, ${narrativeClause}` : ""}.`);
+  const narrativeSegment = `On the narrative side, ${narrativeDetail}${narrativeClause ? `, ${narrativeClause}` : ""}.`;
 
-  // Close: the takeaway.
+  // Beat 3 - Close: the takeaway.
+  let directionSegment = "Overall sentiment is still forming, with no clear directional read yet.";
   if (evidence.direction) {
     const dir = evidence.direction.toLowerCase();
-    let directionSentence = `Bottom line, sentiment reads ${dir}`;
-    if (dir.includes("mixed")) directionSentence += " — stay cautious until a clearer signal emerges";
-    else if (dir.includes("bullish")) directionSentence += ", favoring further upside";
-    else if (dir.includes("bearish")) directionSentence += ", favoring further downside";
-    sentences.push(`${directionSentence}.`);
+    directionSegment = `Bottom line, sentiment reads ${dir}`;
+    if (dir.includes("mixed")) directionSegment += " — stay cautious until a clearer signal emerges";
+    else if (dir.includes("bullish")) directionSegment += ", favoring further upside";
+    else if (dir.includes("bearish")) directionSegment += ", favoring further downside";
+    directionSegment += ".";
   }
 
-  return sentences.join(" ");
+  return [etfSegment, priceSegment, narrativeSegment, directionSegment];
 }
 
 const ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech";
@@ -345,12 +395,75 @@ async function synthesizeVoiceover(script) {
   }
 }
 
-function buildFilterComplex() {
+function ffprobeDuration(filePath) {
+  return new Promise((resolve, reject) => {
+    const args = ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filePath];
+    const proc = spawn("ffprobe", args);
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (c) => (stdout += c.toString()));
+    proc.stderr.on("data", (c) => (stderr += c.toString()));
+    proc.once("error", (err) => reject(new Error(`ffprobe failed to start: ${err.message}`)));
+    proc.once("close", (code) => {
+      const val = parseFloat(stdout.trim());
+      if (code === 0 && Number.isFinite(val)) resolve(val);
+      else reject(new Error(`ffprobe exited ${code} or gave unparseable duration: ${stderr.slice(-500)}`));
+    });
+  });
+}
+
+// Synthesizes one narration segment per beat and measures each real audio
+// duration via ffprobe, so each beat's on-screen window (buildKeyframes)
+// can be driven by that beat's actual spoken length rather than a fixed
+// guess. All-or-nothing: if ElevenLabs isn't configured or ANY segment
+// fails, returns null so the caller falls back to DEFAULT_BEAT_DURATIONS_S
+// with no narration - a partial mix of narrated and silent beats would be
+// a more confusing result than either fully-narrated or fully-silent.
+async function synthesizeNarrationSegments(scripts, frameDir) {
+  if (!process.env.ELEVENLABS_API_KEY) {
+    console.log("[CLIPPER] ELEVENLABS_API_KEY not configured - skipping per-scene voiceover narration");
+    return null;
+  }
+  const segments = [];
+  for (let i = 0; i < scripts.length; i++) {
+    const audio = await synthesizeVoiceover(scripts[i]);
+    if (!audio) return null; // synthesizeVoiceover already logged its own error
+    const segPath = path.join(frameDir, `narration_seg${i}.mp3`);
+    await writeFile(segPath, audio);
+    let duration;
+    try {
+      duration = await ffprobeDuration(segPath);
+    } catch (err) {
+      console.error(`[CLIPPER] Failed to measure narration segment ${i} duration: ${err.message}`);
+      return null;
+    }
+    segments.push({ path: segPath, duration });
+  }
+  return segments;
+}
+
+function concatAudioSegments(segments, outputPath) {
+  return new Promise((resolve, reject) => {
+    const inputArgs = segments.flatMap((s) => ["-i", s.path]);
+    const filter = `${segments.map((_, i) => `[${i}:a]`).join("")}concat=n=${segments.length}:v=0:a=1[aout]`;
+    const args = ["-y", ...inputArgs, "-filter_complex", filter, "-map", "[aout]", outputPath];
+    const proc = spawn("ffmpeg", args);
+    let stderr = "";
+    proc.stderr.on("data", (c) => (stderr += c.toString()));
+    proc.once("error", (err) => reject(new Error(`ffmpeg audio concat failed to start: ${err.message}`)));
+    proc.once("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg audio concat exited ${code}: ${stderr.slice(-500)}`));
+    });
+  });
+}
+
+function buildFilterComplex(keyframes) {
   // Per-keyframe branch, not a single time-varying crop: verified locally
   // (real ffmpeg 5.1.9 render, not assumed) that ffmpeg's crop filter only
   // evaluates its OWN OUTPUT w/h once at filter init - x/y can vary per
   // frame via between(t,...), but w/h stay frozen at whichever keyframe's
-  // dimensions happened to evaluate first (KEYFRAMES[0], the rotator
+  // dimensions happened to evaluate first (keyframes[0], the rotator
   // crop). Every later keyframe with a *different* crop size (the chart
   // beat's CHART_CROP) silently got the rotator's frozen size instead of
   // its own - this is why the chart segment never showed real candles no
@@ -360,8 +473,8 @@ function buildFilterComplex() {
   // its own fixed size, then concat back into one continuous stream -
   // concat reconstructs continuous PTS across segments, so a single
   // downstream between(t,...) drawtext pass still works unmodified.
-  const branchLabels = KEYFRAMES.map((_, i) => `seg${i}`);
-  const splitStage = `split=${KEYFRAMES.length}${KEYFRAMES.map((_, i) => `[s${i}]`).join("")}`;
+  const branchLabels = keyframes.map((_, i) => `seg${i}`);
+  const splitStage = `split=${keyframes.length}${keyframes.map((_, i) => `[s${i}]`).join("")}`;
   // blur_fill background instead of solid black pad: whenever a crop's
   // aspect ratio doesn't match the 1080x1920 output (which is most of the
   // time - none of ROTATOR_CROP/INFO_CROP are 9:16), the remaining space
@@ -370,7 +483,7 @@ function buildFilterComplex() {
   // off a real rendered frame confirmed the background region is smoothly
   // blurred (near-zero local variance) while the sharp foreground content
   // sits centered on top at full detail.
-  const branchStages = KEYFRAMES.map((k, i) => {
+  const branchStages = keyframes.map((k, i) => {
     const crop = k.crop.replace(/:exact=1$/, "");
     return (
       `[s${i}]trim=start=${k.start}:end=${k.end},setpts=PTS-STARTPTS,` +
@@ -381,12 +494,12 @@ function buildFilterComplex() {
       `[c${i}bgblur][c${i}fgscaled]overlay=(W-w)/2:(H-h)/2,setsar=1[${branchLabels[i]}]`
     );
   });
-  // No on-screen text overlay - the ElevenLabs narration (buildAnalystNarration)
+  // No on-screen text overlay - the ElevenLabs narration (buildAnalystNarrationSegments)
   // now carries the same real facts audibly instead, so a redundant caption
   // would just duplicate what's already spoken. concat's output is renamed
   // straight to [vout] rather than [vconcat] since there's no drawtext pass
   // left to chain after it.
-  const concatStage = `${branchLabels.map((l) => `[${l}]`).join("")}concat=n=${KEYFRAMES.length}:v=1:a=0[vout]`;
+  const concatStage = `${branchLabels.map((l) => `[${l}]`).join("")}concat=n=${keyframes.length}:v=1:a=0[vout]`;
 
   return [`[0:v]${splitStage}`, ...branchStages, concatStage].join(";\n");
 }
@@ -409,81 +522,93 @@ async function readOnScreenEvidence(page) {
   }));
 }
 
-async function captureFrames(frameDir) {
+// Split into two phases (was one captureFrames() before) because the
+// actual frame-capture timing now depends on real per-beat narration
+// durations, which can only be known AFTER the real signal/evidence text
+// has been read from this same page and synthesized - a chicken-and-egg
+// order that means the browser has to stay open across that gap instead
+// of closing right after reading evidence.
+async function openCapturePage() {
   const { server, port } = await startLocalServer(path.resolve("."));
   const browser = await puppeteer.launch({
     headless: "new",
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
 
-  try {
-    const page = await browser.newPage();
-    // Forward browser-console output (e.g. index.html's own caught
-    // "[CHART] candleSeries.setData failed" logs) into Railway logs - the
-    // headless page's console is otherwise invisible to us, so a silently
-    // caught chart render error would look identical to "no error at all"
-    // from here.
-    page.on("console", (msg) => console.log(`[CLIPPER PAGE CONSOLE] ${msg.text()}`));
-    page.on("pageerror", (err) => console.error(`[CLIPPER PAGE ERROR] ${err.message}`));
-    await page.setViewport({ width: SOURCE_WIDTH, height: SOURCE_HEIGHT });
-    await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: "networkidle0", timeout: 30_000 });
-    await new Promise((r) => setTimeout(r, 1500)); // let live data connections settle, same rationale as VideoEngine.run()
+  const page = await browser.newPage();
+  // Forward browser-console output (e.g. index.html's own caught
+  // "[CHART] candleSeries.setData failed" logs) into Railway logs - the
+  // headless page's console is otherwise invisible to us, so a silently
+  // caught chart render error would look identical to "no error at all"
+  // from here.
+  page.on("console", (msg) => console.log(`[CLIPPER PAGE CONSOLE] ${msg.text()}`));
+  page.on("pageerror", (err) => console.error(`[CLIPPER PAGE ERROR] ${err.message}`));
+  await page.setViewport({ width: SOURCE_WIDTH, height: SOURCE_HEIGHT });
+  await page.goto(`http://127.0.0.1:${port}/index.html`, { waitUntil: "networkidle0", timeout: 30_000 });
+  await new Promise((r) => setTimeout(r, 1500)); // let live data connections settle, same rationale as VideoEngine.run()
 
-    // Confirmed in production: the flat 1500ms wait above isn't long enough
-    // for the Kraken WebSocket feed to deliver real OHLC candle data
-    // (separate from the market-board ticker). The info panel's TREND/
-    // VOLUME badges are also computed from that same candleData, so they'd
-    // otherwise still show "—" placeholders here even though the candle
-    // canvas itself is no longer in frame. #chart-fallback is hidden via
-    // style.display="none" only once candleData[ticker] actually has
-    // candles (see index.html) - wait on that same signal VideoEngine.run()
-    // already uses (via mb-price-BTC) for the market board.
-    await page
-      .waitForFunction(
-        () => document.getElementById("chart-fallback")?.style.display === "none",
-        { timeout: 8_000 }
-      )
-      .catch(() => {
-        console.error("[CLIPPER] BTC candle data not confirmed within 8s of page load; capturing anyway");
-      });
+  // Confirmed in production: the flat 1500ms wait above isn't long enough
+  // for the Kraken WebSocket feed to deliver real OHLC candle data
+  // (separate from the market-board ticker). The info panel's TREND/
+  // VOLUME badges are also computed from that same candleData, so they'd
+  // otherwise still show "—" placeholders here even though the candle
+  // canvas itself is no longer in frame. #chart-fallback is hidden via
+  // style.display="none" only once candleData[ticker] actually has
+  // candles (see index.html) - wait on that same signal VideoEngine.run()
+  // already uses (via mb-price-BTC) for the market board.
+  await page
+    .waitForFunction(
+      () => document.getElementById("chart-fallback")?.style.display === "none",
+      { timeout: 8_000 }
+    )
+    .catch(() => {
+      console.error("[CLIPPER] BTC candle data not confirmed within 8s of page load; capturing anyway");
+    });
 
-    const chartDebug = await page.evaluate(() => window.__mktChartDebug?.() ?? null);
-    console.log(`[CLIPPER] Chart debug at capture time: ${JSON.stringify(chartDebug)}`);
+  const chartDebug = await page.evaluate(() => window.__mktChartDebug?.() ?? null);
+  console.log(`[CLIPPER] Chart debug at capture time: ${JSON.stringify(chartDebug)}`);
 
-    const evidence = await readOnScreenEvidence(page);
+  const evidence = await readOnScreenEvidence(page);
+  return { page, browser, server, evidence };
+}
 
-    // showRotatorSlide(0) already runs on page load, matching KEYFRAMES[0]'s
-    // rotatorSlide - only need to force it for the later keyframes.
-    const pendingRotatorCues = KEYFRAMES
-      .filter((k) => k.rotatorSlide !== null && k.start > 0)
-      .map((k) => ({ atSecond: k.start, slide: k.rotatorSlide }));
+// Captures the actual frame sequence once real per-beat timing (keyframes,
+// from buildKeyframes) is known - forces the rotator to each beat's real
+// category at its real start time (driven by that beat's own narration
+// duration now, not a fixed offset), same mechanism as before.
+async function captureFramesForKeyframes(page, frameDir, keyframes) {
+  const durationS = keyframes[keyframes.length - 1].end;
+  // showRotatorSlide(0) already runs on page load, matching keyframes[0]'s
+  // rotatorSlide - only need to force it for the later keyframes.
+  const pendingRotatorCues = keyframes
+    .filter((k) => k.rotatorSlide !== null && k.start > 0)
+    .map((k) => ({ atSecond: k.start, slide: k.rotatorSlide }));
 
-    const totalFrames = CLIP_DURATION_S * CLIP_FPS;
-    for (let i = 0; i < totalFrames; i++) {
-      const elapsedS = i / CLIP_FPS;
-      while (pendingRotatorCues.length && elapsedS >= pendingRotatorCues[0].atSecond) {
-        const cue = pendingRotatorCues.shift();
-        await page.evaluate((slide) => window.__mktRotatorGoTo?.(slide), cue.slide);
-      }
-      const frameNum = String(i).padStart(5, "0");
-      await page.screenshot({ path: path.join(frameDir, `frame_${frameNum}.jpg`), type: "jpeg", quality: 85 });
-      await new Promise((r) => setTimeout(r, 1000 / CLIP_FPS));
+  const totalFrames = Math.round(durationS * CLIP_FPS);
+  for (let i = 0; i < totalFrames; i++) {
+    const elapsedS = i / CLIP_FPS;
+    while (pendingRotatorCues.length && elapsedS >= pendingRotatorCues[0].atSecond) {
+      const cue = pendingRotatorCues.shift();
+      await page.evaluate((slide) => window.__mktRotatorGoTo?.(slide), cue.slide);
     }
-    return evidence;
-  } finally {
-    await browser.close();
-    server.close();
+    const frameNum = String(i).padStart(5, "0");
+    await page.screenshot({ path: path.join(frameDir, `frame_${frameNum}.jpg`), type: "jpeg", quality: 85 });
+    await new Promise((r) => setTimeout(r, 1000 / CLIP_FPS));
   }
 }
 
-function renderVideo(frameDir, outputPath, narrationPath) {
+function renderVideo(frameDir, outputPath, narrationPath, keyframes) {
   return new Promise((resolve, reject) => {
+    const durationS = keyframes[keyframes.length - 1].end;
     // Real ElevenLabs narration when available, silent track otherwise -
-    // never fails the render if TTS wasn't configured/errored. apad pads
-    // the audio with silence if the narration runs shorter than the clip
-    // (rather than -shortest, which would truncate the VIDEO down to
-    // whatever the audio's own length happens to be); the output -t bound
-    // below still governs the final duration either way.
+    // never fails the render if TTS wasn't configured/errored. Since
+    // keyframes' own timing is now built from these exact same real
+    // narration segment durations (see buildKeyframes/synthesizeNarration-
+    // Segments), audio and video length should already match; apad stays
+    // as a safety margin against any tiny rounding gap between ffprobe's
+    // measured duration and what ffmpeg actually encodes, rather than
+    // -shortest, which would truncate the video if it were ever off in
+    // the other direction.
     const audioInputArgs = narrationPath
       ? ["-i", narrationPath]
       : ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"];
@@ -492,7 +617,7 @@ function renderVideo(frameDir, outputPath, narrationPath) {
       "-framerate", String(CLIP_FPS),
       "-i", path.join(frameDir, "frame_%05d.jpg"),
       ...audioInputArgs,
-      "-filter_complex", buildFilterComplex(),
+      "-filter_complex", buildFilterComplex(keyframes),
       "-map", "[vout]", "-map", "1:a:0", "-af", "apad",
       // tune=stillimage + a lower CRF (higher quality/bitrate) for
       // graphics-first rendering - this content is flat-color dashboard
@@ -502,7 +627,7 @@ function renderVideo(frameDir, outputPath, narrationPath) {
       // accepted by this ffmpeg/libx264 build.
       "-c:v", "libx264", "-preset", "fast", "-tune", "stillimage", "-crf", "16", "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "128k",
-      "-t", String(CLIP_DURATION_S),
+      "-t", String(durationS),
       outputPath,
     ];
     const ffmpeg = spawn("ffmpeg", args);
@@ -564,30 +689,53 @@ export async function generateAndUploadClip(signal) {
   console.log("[CLIPPER STARTED]");
 
   let frameDir;
+  let browser;
+  let server;
   try {
     if (!signal || typeof signal !== "object") {
       throw new Error("corrupted or missing signal input");
     }
 
     frameDir = await mkdtemp(path.join(tmpdir(), "clip-frames-"));
-    const evidence = await captureFrames(frameDir);
+
+    const capture = await openCapturePage();
+    ({ browser, server } = capture);
+    const { page, evidence } = capture;
 
     const arc = deriveNarrativeArc(signal, evidence);
 
-    // Voiceover reads the same real signal/evidence as the overlays, just
-    // phrased as analyst-report sentences (buildAnalystNarration) rather
-    // than the terse ALL-CAPS caption fragments. Best effort: a TTS
-    // failure/missing API key must not block the rest of the clip, since
-    // the visual pipeline is fully functional without it.
+    // Voiceover reads the same real signal/evidence as the on-screen data
+    // (now removed - see buildFilterComplex), phrased as analyst-report
+    // sentences with zero raw numbers spoken (buildAnalystNarrationSegments).
+    // Best effort: a TTS failure/missing API key must not block the rest of
+    // the clip - synthesizeNarrationSegments returns null on any failure,
+    // and DEFAULT_BEAT_DURATIONS_S covers timing so the visual pipeline
+    // still works with no narration at all.
+    const scripts = buildAnalystNarrationSegments(signal, evidence);
+    const narrationSegments = await synthesizeNarrationSegments(scripts, frameDir);
+
     let narrationPath = null;
-    const narrationAudio = await synthesizeVoiceover(buildAnalystNarration(signal, evidence));
-    if (narrationAudio) {
+    let keyframes;
+    if (narrationSegments) {
+      keyframes = buildKeyframes(narrationSegments.map((s) => s.duration));
       narrationPath = path.join(frameDir, "narration.mp3");
-      await writeFile(narrationPath, narrationAudio);
+      await concatAudioSegments(narrationSegments, narrationPath);
+    } else {
+      keyframes = buildKeyframes(DEFAULT_BEAT_DURATIONS_S);
     }
 
+    // Real per-beat narration duration now drives how long each beat's
+    // visual crop actually stays on screen (via keyframes), so the frame
+    // capture itself can't start until keyframes is known - this is the
+    // second phase of the two-phase capture split (see openCapturePage).
+    await captureFramesForKeyframes(page, frameDir, keyframes);
+    await browser.close();
+    browser = null;
+    server.close();
+    server = null;
+
     const outputPath = path.join(frameDir, "clip.mp4");
-    await renderVideo(frameDir, outputPath, narrationPath);
+    await renderVideo(frameDir, outputPath, narrationPath, keyframes);
     console.log("[RENDER COMPLETE]");
 
     const videoBuffer = await readFile(outputPath);
@@ -606,6 +754,12 @@ export async function generateAndUploadClip(signal) {
     console.error(`[CLIPPER] Failed: ${err.message}`);
     return null;
   } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+    if (server) {
+      server.close();
+    }
     if (frameDir) {
       await rm(frameDir, { recursive: true, force: true }).catch(() => {});
     }
