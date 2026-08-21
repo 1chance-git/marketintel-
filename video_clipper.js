@@ -27,7 +27,10 @@ const SOURCE_WIDTH = 1280;
 const SOURCE_HEIGHT = 720;
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
-const CLIP_FPS = 15; // lower than the main broadcast's 30fps - a 12s still-dashboard clip doesn't need more, and it halves render time
+// 24fps (not lower) - a downstream enhancement/upscale tool the user runs
+// on these clips after upload rejects anything below 24fps outright, so
+// 15fps clips silently couldn't be processed by it at all.
+const CLIP_FPS = 24;
 const FONT_PATH = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf";
 
 // Crop fractions below are measured directly from the real rendered layout
