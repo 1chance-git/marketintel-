@@ -216,20 +216,38 @@ async function createFreshBroadcast(accessToken, streamId) {
   return broadcast.id;
 }
 
+// Real production failure (confirmed via Railway logs): YouTube's
+// videos.insert rejected a real upload with 400 "The request metadata
+// specifies an invalid video description" (location: body.snippet.
+// description). overlayText's lines got substantially longer once
+// narration started joining multiple real bullets plus the curiosity-gap
+// hook/seamless-loop text (up to ~480 chars each, vs. the old ~36-char
+// truncated captions) - the exact triggering character/pattern couldn't
+// be reproduced locally (YouTube's API is unreachable from this sandbox),
+// so this strips C0/C1 control characters (a common cause of API-level
+// "invalid" content validation failures) and caps total length well
+// under YouTube's 5000-char limit as a defensive measure covering this
+// class of issue generally, not just the one observed case.
+function sanitizeForYoutube(text) {
+  return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "").trim();
+}
+
 // Builds title/description/tags from the real signal that triggered the
 // clip - never fixed marketing copy. Falls back to a neutral, non-claim
 // default only when a field is genuinely empty, same rule video_clipper.js
 // uses for the on-screen overlay text.
 function buildShortMetadata({ signal, overlayText }) {
   const hook = overlayText?.[0] || "Market Update";
-  const title = `${hook} | Live Terminal Intel`.slice(0, 100);
-  const bodyLines = (overlayText || []).slice(0, 3).filter(Boolean);
-  const description = [
-    ...bodyLines,
-    "",
-    `Signal timestamp: ${signal?.timestamp || "unknown"}`,
-    "Live terminal intel - not financial advice.",
-  ].join("\n");
+  const title = sanitizeForYoutube(`${hook} | Live Terminal Intel`).slice(0, 100);
+  const bodyLines = (overlayText || []).slice(0, 3).filter(Boolean).map(sanitizeForYoutube);
+  const description = sanitizeForYoutube(
+    [
+      ...bodyLines,
+      "",
+      `Signal timestamp: ${signal?.timestamp || "unknown"}`,
+      "Live terminal intel - not financial advice.",
+    ].join("\n")
+  ).slice(0, 4800);
   return {
     snippet: {
       title,
