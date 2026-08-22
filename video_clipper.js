@@ -176,15 +176,34 @@ function truncateForSpeech(text) {
   return (lastSpace > SPEECH_MAX_CHARS * 0.5 ? cut.slice(0, lastSpace) : cut).trim();
 }
 
-// Real signal bullets, spoken close to verbatim - deliberately NOT run
-// through stripNumbers. Unlike the old single-clip narration (which never
-// spoke raw numbers, by design), these themed clips exist specifically to
-// call out real figures a viewer asked for ("$517M+ BTC ETF inflows",
-// "BlackRock's $285M IBIT dominance") - the numbers are real, sourced
-// directly from the Grok/Supabase signal text, never invented, so
-// speaking them verbatim is still within the no-fabrication rule; it's a
-// different stylistic choice for a different kind of clip, not a
-// loosening of what's allowed to be said.
+// Removes numeric literals (currency amounts, percentages, ranges, plain
+// numbers, and their attached units like "$385-390M" or "24h") from real
+// free-text signal fields before they're spoken. Narration must never read
+// a raw number aloud - only the real qualitative color the number sits
+// inside. This briefly changed (a themed clip spoke real dollar figures
+// verbatim, e.g. "$517M+ BTC ETF inflows") but was reverted - numbers stay
+// off narration across every clip that reads raw signal text; the real
+// figures are still visible on screen in the captured panel itself, just
+// not spoken. Only strips digit-bearing tokens; any other real wording in
+// the same sentence ("led by GBTC redemptions") survives untouched, and
+// nothing is invented to replace what's removed.
+function stripNumbers(text) {
+  return text
+    .replace(/[$~]?\d[\d,.]*\s*-\s*[$~]?\d[\d,.]*\s*[%A-Za-z]*/g, "")
+    .replace(/[$~]?\d[\d,.]*\s*[%A-Za-z]*/g, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/^[,.\s]+|[,.\s]+$/g, "")
+    .trim();
+}
+
+// Real signal bullets, spoken with numbers stripped (stripNumbers) - the
+// qualitative content is real and verbatim-adjacent ("BTC spot ETFs saw
+// major inflows, led by BlackRock"), the digits themselves are not spoken.
+// Does NOT apply to buildTechnicalNarration - that clip's entire content
+// is real EMA/VWAP/price numbers, so stripping there would leave it
+// saying almost nothing; this only covers the clips that read raw Grok
+// signal text.
 function buildFieldNarration(items, categoryLabel) {
   const real = Array.isArray(items) ? items.filter((s) => typeof s === "string" && s.trim()) : [];
   if (!real.length) {
@@ -193,7 +212,7 @@ function buildFieldNarration(items, categoryLabel) {
   return real.slice(0, 3).map((raw) => {
     const idx = raw.indexOf(":");
     const cleaned = (idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim();
-    return truncateForSpeech(cleaned);
+    return truncateForSpeech(stripNumbers(cleaned));
   });
 }
 
@@ -242,7 +261,10 @@ function buildWhatNowNarration(signal, evidence) {
   if (!rows.length) {
     return ["No notable market-intelligence summary is available in this signal."];
   }
-  return rows.map((row) => `${row.label}: ${truncateForSpeech(row.value)}.`);
+  // TOP NARRATIVE/TOP SIGNAL are raw signal text (same numbers-off rule as
+  // buildFieldNarration); OVERALL BIAS is already a non-numeric label
+  // (RISK-ON/RISK-OFF/MIXED) so stripNumbers is a no-op there.
+  return rows.map((row) => `${row.label}: ${truncateForSpeech(stripNumbers(row.value))}.`);
 }
 
 const CLIP_TEMPLATES = [
