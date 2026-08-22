@@ -185,11 +185,13 @@ function truncateForHook(text) {
 
 // Narration-length truncation (not the on-screen hook's tight 24-char cap) -
 // word-boundary safe, generous enough that ElevenLabs still reads a full,
-// natural clause rather than a fragment - not a target length, just a
-// backstop against an unreasonably long single line. Sized for up to 3
-// joined real bullets (buildPartLine) plus the curiosity-gap hook line or
-// seamless-loop closer prefixed/appended onto segment 0/last.
-const SPEECH_MAX_CHARS = 480;
+// natural clause rather than a fragment. Real production feedback on an
+// actual uploaded clip: narration ran too long reading multiple joined
+// bullets verbatim ("reading all the text instead of getting the
+// signal") - tightened back down from 480 (sized for 3 joined bullets)
+// to fit one real bullet plus the hook/loop line, forcing brevity: the
+// single most essential real line per part, not several concatenated.
+const SPEECH_MAX_CHARS = 220;
 function truncateForSpeech(text) {
   if (text.length <= SPEECH_MAX_CHARS) return text;
   const cut = text.slice(0, SPEECH_MAX_CHARS);
@@ -229,22 +231,22 @@ function stripNumbers(text) {
     .trim();
 }
 
-// Real signal bullets (up to 2, joined into one flowing line), spoken with
-// numbers stripped (stripNumbers) - the qualitative content is real and
-// verbatim-adjacent ("BTC spot ETFs saw major inflows, led by BlackRock.
-// ETH spot ETFs also picked up"), the digits themselves are not spoken.
-// Joining 2 real bullets instead of just 1 gives genuinely more spoken
-// content per part (needed to reach ~15s of real narration across a
-// clip's 2 parts) without any extra ElevenLabs API call - still one TTS
-// request per part, just a longer one. Returns null (not a fallback
-// string) when the field is genuinely empty, so the caller can skip this
-// part of a combined clip entirely rather than wasting a beat on "no
-// data" filler when the OTHER part has real content to show.
+// The single most prominent real signal bullet (the FIRST real entry,
+// same "lead item is the headline" assumption the rest of this pipeline
+// already makes elsewhere), spoken with numbers stripped (stripNumbers).
+// Previously joined up to 3 real bullets per part for more spoken
+// duration, but real feedback on an actual uploaded clip was that this
+// read as reciting raw text rather than surfacing the signal - one clean
+// real line per part is the actual "signal," not several bullets
+// concatenated. Returns null (not a fallback string) when the field is
+// genuinely empty, so the caller can skip this part of a combined clip
+// entirely rather than wasting a beat on "no data" filler when the OTHER
+// part has real content to show.
 function buildPartLine(items) {
   const real = Array.isArray(items) ? items.filter((s) => typeof s === "string" && s.trim()) : [];
   if (!real.length) return null;
   const cleaned = real
-    .slice(0, 3)
+    .slice(0, 1)
     .map((raw) => {
       const idx = raw.indexOf(":");
       return stripNumbers((idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim());
@@ -267,19 +269,12 @@ function buildTechnicalPartLine(evidence) {
   const t = evidence.technical;
   if (!t || !Number.isFinite(t.price)) return null;
   const trend = (t.trend || "neutral").toLowerCase();
-  const clauses = [`${t.ticker} is trading around ${formatUsd(t.price)}, with the trend reading ${trend}`];
-  if (Number.isFinite(t.ema20) && Number.isFinite(t.ema50)) {
-    const relation = t.ema20 > t.ema50 ? "sitting above" : t.ema20 < t.ema50 ? "sitting below" : "converging with";
-    clauses.push(`the twenty-period average ${relation} the fifty-period average`);
-  }
-  if (Number.isFinite(t.vwap)) {
-    const relation = t.price > t.vwap ? "above" : t.price < t.vwap ? "below" : "right at";
-    clauses.push(`price sitting ${relation} the volume-weighted average price`);
-  }
-  if (t.volume && t.volume !== "—") {
-    clauses.push(`volume currently reading ${t.volume.toLowerCase()}`);
-  }
-  return `${clauses.join(", ")}.`;
+  // One real clause, not several stacked together - same brevity fix as
+  // buildPartLine (real feedback: too much reading, not enough signal).
+  // Price+trend is the single most essential real reading; EMA/VWAP/
+  // volume are still real and still visible on screen, just not all
+  // spoken in one breath.
+  return `${t.ticker} is trading around ${formatUsd(t.price)}, with the trend reading ${trend}.`;
 }
 
 // "What Matters Now" verdict line - the real OVERALL BIAS row already
