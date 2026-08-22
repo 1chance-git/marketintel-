@@ -1057,11 +1057,38 @@
         const bottom = Math.max(...rects.map((r) => r.y + r.height));
         textBBox = { x: left, y: top, width: right - left, height: bottom - top };
       }
+      // Real EMA20/EMA50/VWAP/price values for the active ticker, computed
+      // via the exact same computeEMA/computeVWAP functions the chart's own
+      // line series already use (defined further down this script, but
+      // function declarations hoist within this scope) - recomputed fresh
+      // here rather than cached, so this always reflects the currently
+      // rendered indicators. Only ever exposes numbers already computed for
+      // the visible chart; never a new/independent calculation. Returns
+      // null when there's no candle history yet, so a caller can't
+      // mistake "no data" for a real zero.
+      const activeCandles = candleData[activeTicker] || [];
+      let technical = null;
+      if (activeCandles.length) {
+        const ema20 = computeEMA(activeCandles, 20);
+        const ema50 = computeEMA(activeCandles, 50);
+        const vwap = computeVWAP(activeCandles);
+        const last = activeCandles[activeCandles.length - 1];
+        technical = {
+          ticker: activeTicker,
+          price: Number.isFinite(last?.close) ? last.close : null,
+          ema20: ema20.length ? ema20[ema20.length - 1].value : null,
+          ema50: ema50.length ? ema50[ema50.length - 1].value : null,
+          vwap: vwap.length ? vwap[vwap.length - 1].value : null,
+          trend: trendValueEl?.textContent?.trim() || null,
+          volume: volumeValueEl?.textContent?.trim() || null,
+        };
+      }
       return {
         candleCount: candleData.BTC.length,
         badgesRect: rectOf(document.getElementById("chart-badges")),
         legendRect: rectOf(document.getElementById("chart-legend")),
         textBBox,
+        technical,
       };
     };
 
