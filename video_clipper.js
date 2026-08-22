@@ -81,6 +81,19 @@ const ROTATOR_CROP = "w='iw*0.32':h='ih*0.50':x='iw*0.68':y='ih*0.117'";
 // converted to iw*/ih* fractions.
 const INFO_CROP = "w='iw*0.1383':h='ih*0.091':x=0:y='ih*0.2007'";
 
+// A ~8% tighter, re-centered version of the same real crop region -
+// alternated in every other beat (see buildKeyframes) as a cheap "pattern
+// interrupt": the visual framing punches in slightly on a beat change so
+// the shot isn't perfectly static for the whole clip, without any new
+// capture/timing machinery (same DOM pixels, same evidence, just a
+// different centered crop of them) and without reopening the per-beat
+// caption/sync problems this project already tried and reverted twice.
+// Center point is preserved algebraically from ROTATOR_CROP/INFO_CROP's
+// own real x/y/w/h (new_w = w*0.92, new_x = x + w*0.04, etc.) - not a
+// separately eyeballed region.
+const ROTATOR_CROP_ZOOM = "w='iw*0.2944':h='ih*0.46':x='iw*0.6928':y='ih*0.137'";
+const INFO_CROP_ZOOM = "w='iw*0.127236':h='ih*0.08372':x='iw*0.005532':y='ih*0.20434'";
+
 // Fallback timing only - used when narration isn't available/fails
 // entirely (see synthesizeNarrationSegments's all-or-nothing behavior), so
 // a themed clip still has a sensible pace with no real audio driving it.
@@ -89,16 +102,17 @@ const INFO_CROP = "w='iw*0.1383':h='ih*0.091':x=0:y='ih*0.2007'";
 const DEFAULT_BEAT_DURATIONS_S = [3.2, 3.2, 3.2];
 
 // Builds the KEYFRAMES array for one themed clip from real per-beat
-// narration durations (or the DEFAULT_BEAT_DURATIONS_S fallback). Unlike
-// the old 4-beat arc, every beat in a themed clip shares the same crop and
-// rotator slide - each clip stays on its one real data category the whole
-// way through rather than cutting between panels.
-function buildKeyframes(beatDurations, crop, rotatorSlide) {
+// narration durations (or the DEFAULT_BEAT_DURATIONS_S fallback). Every
+// beat stays on the same rotator slide/data category (unlike the old
+// 4-beat arc, which cut between panels) but alternates between the normal
+// crop and its punched-in zoom variant beat-to-beat for a bit of visual
+// movement.
+function buildKeyframes(beatDurations, crop, zoomCrop, rotatorSlide) {
   let t = 0;
-  return beatDurations.map((duration) => {
+  return beatDurations.map((duration, i) => {
     const start = t;
     t += duration;
-    return { start, end: t, crop, rotatorSlide };
+    return { start, end: t, crop: i % 2 === 0 ? crop : zoomCrop, rotatorSlide };
   });
 }
 
@@ -222,6 +236,7 @@ const CLIP_TEMPLATES = [
     label: "INSTITUTIONAL FLOWS",
     rotatorSlide: 0,
     crop: ROTATOR_CROP,
+    zoomCrop: ROTATOR_CROP_ZOOM,
     buildScripts: (signal) => buildFieldNarration(signal.etf_flows, "ETF / institutional flow"),
   },
   {
@@ -229,6 +244,7 @@ const CLIP_TEMPLATES = [
     label: "MACRO PULSE",
     rotatorSlide: 1,
     crop: ROTATOR_CROP,
+    zoomCrop: ROTATOR_CROP_ZOOM,
     buildScripts: (signal) => buildFieldNarration(signal.system_macro, "macro"),
   },
   {
@@ -236,6 +252,7 @@ const CLIP_TEMPLATES = [
     label: "TECHNICAL READ",
     rotatorSlide: null,
     crop: INFO_CROP,
+    zoomCrop: INFO_CROP_ZOOM,
     buildScripts: (signal, evidence) => buildTechnicalNarration(evidence),
   },
   {
@@ -243,6 +260,7 @@ const CLIP_TEMPLATES = [
     label: "NARRATIVE PULSE",
     rotatorSlide: 2,
     crop: ROTATOR_CROP,
+    zoomCrop: ROTATOR_CROP_ZOOM,
     buildScripts: (signal) => buildFieldNarration(signal.x_narratives, "narrative"),
   },
   {
@@ -250,6 +268,7 @@ const CLIP_TEMPLATES = [
     label: "SENTIMENT CHECK",
     rotatorSlide: 3,
     crop: ROTATOR_CROP,
+    zoomCrop: ROTATOR_CROP_ZOOM,
     buildScripts: (signal) => buildFieldNarration(signal.sentiment, "sentiment"),
   },
 ];
@@ -747,13 +766,19 @@ export async function generateAndUploadClip(signal) {
         let narrationPath = null;
         let keyframes;
         if (narrationSegments) {
-          keyframes = buildKeyframes(narrationSegments.map((s) => s.duration), template.crop, template.rotatorSlide);
+          keyframes = buildKeyframes(
+            narrationSegments.map((s) => s.duration),
+            template.crop,
+            template.zoomCrop,
+            template.rotatorSlide
+          );
           narrationPath = path.join(frameDir, "narration.mp3");
           await concatAudioSegments(narrationSegments, narrationPath);
         } else {
           keyframes = buildKeyframes(
             DEFAULT_BEAT_DURATIONS_S.slice(0, scripts.length),
             template.crop,
+            template.zoomCrop,
             template.rotatorSlide
           );
         }
