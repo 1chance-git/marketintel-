@@ -147,13 +147,13 @@ function deriveColor(text) {
   return "#FFFFFF";
 }
 
-// Five focused single-topic clips instead of one multi-beat arc - each
+// Six focused single-topic clips instead of one multi-beat arc - each
 // stays on one real data category the whole time (one crop/rotator-slide
-// for all its beats), matching the 5 themes requested: institutional/ETF
-// flow, macro/Fear&Greed, technical indicators, narrative/catalyst, and
-// overall sentiment. rotatorSlide indices match index.html's own rotator
-// order (etf=0, macro=1, narrative=2, sentiment=3); technical-analysis has
-// no rotator slide of its own - it's the TREND/VOLUME/EMA/VWAP info panel,
+// for all its beats): institutional/ETF flow, macro/Fear&Greed, technical
+// indicators, narrative/catalyst, overall sentiment, and "what matters
+// now". rotatorSlide indices match index.html's own rotator order (etf=0,
+// macro=1, narrative=2, sentiment=3, whatnow=4); technical-analysis has no
+// rotator slide of its own - it's the TREND/VOLUME/EMA/VWAP info panel,
 // which is visible independent of rotator state.
 const HOOK_MAX_CHARS = 24;
 function truncateForHook(text) {
@@ -230,6 +230,21 @@ function buildTechnicalNarration(evidence) {
   return segments;
 }
 
+// "What Matters Now" narration - one sentence per real row already shown
+// on that panel (see readOnScreenEvidence's comment: TOP NARRATIVE/TOP
+// SIGNAL/OVERALL BIAS, computed by index.html's own renderWhatNow() from
+// the first real x_narratives/sentiment entries). Speaks each row's real
+// value close to verbatim, same as buildFieldNarration's other themed
+// clips - nothing here is a new judgment call, just the panel's own
+// real text read aloud.
+function buildWhatNowNarration(signal, evidence) {
+  const rows = evidence.whatNowRows || [];
+  if (!rows.length) {
+    return ["No notable market-intelligence summary is available in this signal."];
+  }
+  return rows.map((row) => `${row.label}: ${truncateForSpeech(row.value)}.`);
+}
+
 const CLIP_TEMPLATES = [
   {
     id: "etf-flows",
@@ -270,6 +285,14 @@ const CLIP_TEMPLATES = [
     crop: ROTATOR_CROP,
     zoomCrop: ROTATOR_CROP_ZOOM,
     buildScripts: (signal) => buildFieldNarration(signal.sentiment, "sentiment"),
+  },
+  {
+    id: "what-matters-now",
+    label: "WHAT MATTERS NOW",
+    rotatorSlide: 4,
+    crop: ROTATOR_CROP,
+    zoomCrop: ROTATOR_CROP_ZOOM,
+    buildScripts: (signal, evidence) => buildWhatNowNarration(signal, evidence),
   },
 ];
 
@@ -535,6 +558,16 @@ async function readOnScreenEvidence(page) {
     volume: document.getElementById("volume-value")?.textContent?.trim() || null,
     direction: document.querySelector(".term-direction-value")?.textContent?.trim() || null,
     technical: window.__mktChartDebug?.()?.technical ?? null,
+    // "What Matters Now" rows (TOP NARRATIVE / TOP SIGNAL / OVERALL BIAS) -
+    // index.html's own renderWhatNow() already builds these purely from
+    // the first real x_narratives/sentiment entries plus a deterministic
+    // bias readout (see its comment: "deliberately NOT a new synthesized
+    // insight"). Read directly off the DOM rather than recomputed here, so
+    // narration can never diverge from what the panel actually shows.
+    whatNowRows: Array.from(document.querySelectorAll("#whatnow-list li")).map((li) => ({
+      label: li.querySelector(".term-row-label")?.textContent?.trim() || "",
+      value: li.querySelector(".term-row-value")?.textContent?.trim() || "",
+    })),
   }));
 }
 
@@ -706,14 +739,15 @@ function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, h
 // this process only ever runs one generateAndUploadClip at a time by design.
 let clipGenerationInFlight = false;
 
-// Generates up to 5 focused, single-topic short clips from the given
+// Generates up to 6 focused, single-topic short clips from the given
 // normalized Grok signal (same shape stream_engine.js already writes to
 // grok_data.json) - one per CLIP_TEMPLATES entry (institutional/ETF flow,
 // macro pulse, technical indicators, narrative/catalyst, overall
-// sentiment) - and uploads each to YouTube as an unlisted Short for manual
-// review. One Chromium/local-HTTP-server pair is opened once and reused
-// across all five clips rather than relaunching per clip. A failure on one
-// template is logged and skipped so it can't take down the other four;
+// sentiment, what-matters-now) - and uploads each to YouTube as an
+// unlisted Short for manual review. One Chromium/local-HTTP-server pair is
+// opened once and reused across all six clips rather than relaunching per
+// clip. A failure on one template is logged and skipped so it can't
+// take down the others;
 // never throws past this function's own logging either way - a failure
 // here must not take down the caller (the main broadcast pipeline).
 export async function generateAndUploadClip(signal) {
