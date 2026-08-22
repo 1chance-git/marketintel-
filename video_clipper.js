@@ -185,8 +185,10 @@ function truncateForHook(text) {
 
 // Narration-length truncation (not the on-screen hook's tight 24-char cap) -
 // word-boundary safe, generous enough that ElevenLabs still reads a full,
-// natural clause rather than a fragment.
-const SPEECH_MAX_CHARS = 220;
+// natural clause rather than a fragment. Sized for up to 2 joined real
+// bullets (buildPartLine) plus the curiosity-gap hook line prefixed onto
+// segment 0.
+const SPEECH_MAX_CHARS = 360;
 function truncateForSpeech(text) {
   if (text.length <= SPEECH_MAX_CHARS) return text;
   const cut = text.slice(0, SPEECH_MAX_CHARS);
@@ -209,25 +211,45 @@ function stripNumbers(text) {
   return text
     .replace(/[$~]?\d[\d,.]*\s*-\s*[$~]?\d[\d,.]*\s*[%A-Za-z]*/g, "")
     .replace(/[$~]?\d[\d,.]*\s*[%A-Za-z]*/g, "")
+    // Orphaned +/~ signs left dangling once the number after them is gone
+    // (e.g. "+$517M (largest..." -> "+ (largest..." after the above) - the
+    // bare sign reads as a typo to a TTS voice, not a real word. Became
+    // more visible once buildPartLine started joining 2 real bullets per
+    // part instead of 1 (more lines that individually start with a
+    // number, e.g. two "+$...M" ETF-flow bullets in a row).
+    .replace(/(^|\s)[+~](?=\s|$|\))/g, "$1")
+    // Now-empty parenthetical remnants (e.g. "( )") left behind once
+    // everything inside was numeric.
+    .replace(/\(\s*\)/g, "")
     .replace(/\s{2,}/g, " ")
-    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/\s+([,.;:)])/g, "$1")
+    .replace(/\(\s+/g, "(")
     .replace(/^[,.\s]+|[,.\s]+$/g, "")
     .trim();
 }
 
-// Real signal bullet, spoken with numbers stripped (stripNumbers) - the
-// qualitative content is real and verbatim-adjacent ("BTC spot ETFs saw
-// major inflows, led by BlackRock"), the digits themselves are not spoken.
-// Returns null (not a fallback string) when the field is genuinely empty,
-// so the caller can skip this part of a combined clip entirely rather
-// than wasting a beat on "no data" filler when the OTHER part has real
-// content to show.
+// Real signal bullets (up to 2, joined into one flowing line), spoken with
+// numbers stripped (stripNumbers) - the qualitative content is real and
+// verbatim-adjacent ("BTC spot ETFs saw major inflows, led by BlackRock.
+// ETH spot ETFs also picked up"), the digits themselves are not spoken.
+// Joining 2 real bullets instead of just 1 gives genuinely more spoken
+// content per part (needed to reach ~15s of real narration across a
+// clip's 2 parts) without any extra ElevenLabs API call - still one TTS
+// request per part, just a longer one. Returns null (not a fallback
+// string) when the field is genuinely empty, so the caller can skip this
+// part of a combined clip entirely rather than wasting a beat on "no
+// data" filler when the OTHER part has real content to show.
 function buildPartLine(items) {
-  const real = Array.isArray(items) ? items.find((s) => typeof s === "string" && s.trim()) : null;
-  if (!real) return null;
-  const idx = real.indexOf(":");
-  const cleaned = (idx !== -1 && idx <= 40) ? real.slice(idx + 1).trim() : real.trim();
-  return truncateForSpeech(stripNumbers(cleaned));
+  const real = Array.isArray(items) ? items.filter((s) => typeof s === "string" && s.trim()) : [];
+  if (!real.length) return null;
+  const cleaned = real
+    .slice(0, 2)
+    .map((raw) => {
+      const idx = raw.indexOf(":");
+      return stripNumbers((idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim());
+    })
+    .filter(Boolean);
+  return truncateForSpeech(cleaned.join(". "));
 }
 
 function formatUsd(n) {
@@ -244,11 +266,19 @@ function buildTechnicalPartLine(evidence) {
   const t = evidence.technical;
   if (!t || !Number.isFinite(t.price)) return null;
   const trend = (t.trend || "neutral").toLowerCase();
+  const clauses = [`${t.ticker} is trading around ${formatUsd(t.price)}, with the trend reading ${trend}`];
   if (Number.isFinite(t.ema20) && Number.isFinite(t.ema50)) {
-    const relation = t.ema20 > t.ema50 ? "above" : t.ema20 < t.ema50 ? "below" : "converging with";
-    return `${t.ticker} is trading around ${formatUsd(t.price)}, trend reading ${trend}, twenty-period average sitting ${relation} the fifty-period average.`;
+    const relation = t.ema20 > t.ema50 ? "sitting above" : t.ema20 < t.ema50 ? "sitting below" : "converging with";
+    clauses.push(`the twenty-period average ${relation} the fifty-period average`);
   }
-  return `${t.ticker} is trading around ${formatUsd(t.price)}, with the trend reading ${trend}.`;
+  if (Number.isFinite(t.vwap)) {
+    const relation = t.price > t.vwap ? "above" : t.price < t.vwap ? "below" : "right at";
+    clauses.push(`price sitting ${relation} the volume-weighted average price`);
+  }
+  if (t.volume && t.volume !== "—") {
+    clauses.push(`volume currently reading ${t.volume.toLowerCase()}`);
+  }
+  return `${clauses.join(", ")}.`;
 }
 
 // "What Matters Now" verdict line - the real OVERALL BIAS row already
@@ -275,6 +305,7 @@ const CLIP_TEMPLATES = [
     id: "money-macro",
     label: "MONEY & MACRO",
     hookLine: "Something's shifting in institutional money before most people notice —",
+    loopLine: "And that shift is exactly why something's worth watching here.",
     parts: [
       { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 0, buildLine: (signal) => buildPartLine(signal.etf_flows) },
       { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 1, buildLine: (signal) => buildPartLine(signal.system_macro) },
@@ -284,6 +315,7 @@ const CLIP_TEMPLATES = [
     id: "chart-narrative",
     label: "CHART & NARRATIVE",
     hookLine: "The chart's telling a different story than the headlines —",
+    loopLine: "Which is exactly the story the chart keeps telling.",
     parts: [
       { crop: INFO_CROP, zoomCrop: INFO_CROP_ZOOM, rotatorSlide: null, buildLine: (signal, evidence) => buildTechnicalPartLine(evidence) },
       { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 2, buildLine: (signal) => buildPartLine(signal.x_narratives) },
@@ -293,6 +325,7 @@ const CLIP_TEMPLATES = [
     id: "sentiment-verdict",
     label: "SENTIMENT & VERDICT",
     hookLine: "It's not as simple as bullish or bearish —",
+    loopLine: "Proving once again it's rarely that simple.",
     parts: [
       { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 3, buildLine: (signal) => buildPartLine(signal.sentiment) },
       { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 4, buildLine: (signal, evidence) => buildVerdictLine(evidence) },
@@ -323,6 +356,19 @@ function resolveClipParts(template, signal, evidence) {
 function applyHookLine(template, parts) {
   if (!parts.length || parts[0].text.startsWith("No notable")) return parts;
   return [{ ...parts[0], text: `${template.hookLine} ${parts[0].text}` }, ...parts.slice(1)];
+}
+
+// Seamless-loop closer: a short, fixed, non-factual wrap-up sentence
+// (echoes the hook line's own wording, e.g. "something's shifting" ->
+// "...why something's worth watching") appended to the LAST real part's
+// text - same no-extra-TTS-call approach as applyHookLine. Lets the last
+// spoken word lead back into the hook's own theme, so a viewer who loops
+// the clip hears it as one continuous thought rather than a hard restart.
+// Skipped on the "no data" fallback for the same reason as applyHookLine.
+function applyLoopLine(template, parts) {
+  if (!parts.length || parts[parts.length - 1].text.startsWith("No notable")) return parts;
+  const last = parts.length - 1;
+  return parts.map((part, i) => (i === last ? { ...part, text: `${part.text} ${template.loopLine}` } : part));
 }
 
 // Bold hook title for a themed clip's first 3 seconds - the template's own
@@ -372,7 +418,12 @@ async function synthesizeVoiceover(script) {
       body: JSON.stringify({
         text: script,
         model_id: "eleven_turbo_v2_5",
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        // speed: 1.0 is ElevenLabs' default/natural pace; 1.15 is a
+        // modest bump for a brisker delivery, within their documented
+        // 0.7-1.2 range for this model - not verifiable from this
+        // sandbox (ElevenLabs is network-blocked here), so confirm the
+        // pace actually sounds right on the next real production clip.
+        voice_settings: { stability: 0.5, similarity_boost: 0.75, speed: 1.15 },
       }),
     });
     if (!res.ok) {
@@ -828,7 +879,7 @@ export async function generateAndUploadClip(signal) {
         // real data is dropped rather than filled with filler (see
         // resolveClipParts), then the curiosity-gap opener is prefixed
         // onto the first real line (applyHookLine).
-        const parts = applyHookLine(template, resolveClipParts(template, signal, evidence));
+        const parts = applyLoopLine(template, applyHookLine(template, resolveClipParts(template, signal, evidence)));
         const scripts = parts.map((p) => p.text);
         const narrationSegments = await synthesizeNarrationSegments(scripts, frameDir);
 
