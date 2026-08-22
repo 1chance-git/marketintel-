@@ -2224,6 +2224,37 @@
     // category). No effect on normal viewer-facing behavior - nothing
     // here calls it during regular playback.
     window.__mktRotatorGoTo = showRotatorSlide;
+
+    // Real measured bounding box of the header + DIRECTION row (if the
+    // currently visible slide has one) + the first real content <li> only
+    // - explicitly EXCLUDES any further real bullets past the first, so
+    // an external capture session can crop tightly to just what it's
+    // about to narrate instead of the whole panel (which can hold up to
+    // MAX_ROWS_PER_SECTION real bullets). A fixed crop fraction can't do
+    // this correctly since real bullet text length varies signal to
+    // signal - this measures the actual rendered rect fresh each call,
+    // same "read real rects, don't guess" approach as __mktChartDebug.
+    // Returns null if the visible slide has no real content row yet
+    // (empty state showing instead).
+    window.__mktRotatorTightRect = () => {
+      const visibleSlide = rotationSlideEls.find((el) => !el.hidden);
+      if (!visibleSlide) return null;
+      const listEl = visibleSlide.querySelector("ul.term-rows");
+      if (!listEl || listEl.hidden) return null;
+      const rows = Array.from(listEl.children);
+      const firstContentRow = rows.find((li) => !li.classList.contains("direction-row"));
+      if (!firstContentRow) return null;
+
+      const headerEl = document.querySelector("#card-rotator .card-title");
+      const directionRow = rows.find((li) => li.classList.contains("direction-row"));
+      const rectEls = [headerEl, directionRow, firstContentRow].filter(Boolean);
+      const rects = rectEls.map((el) => el.getBoundingClientRect());
+      const left = Math.min(...rects.map((r) => r.x));
+      const top = Math.min(...rects.map((r) => r.y));
+      const right = Math.max(...rects.map((r) => r.x + r.width));
+      const bottom = Math.max(...rects.map((r) => r.y + r.height));
+      return { x: left, y: top, width: right - left, height: bottom - top };
+    };
   })();
 </script>
 <script>
