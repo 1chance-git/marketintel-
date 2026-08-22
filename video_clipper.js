@@ -135,7 +135,11 @@ function rectToCropFilterZoom(rect) {
 // a combined clip still has a sensible pace with no real audio driving it.
 // Each clip has exactly 1 beat per real part found (max 3, since each
 // CLIP_TEMPLATES entry combines exactly 3 sub-topics - see below).
-const DEFAULT_BEAT_DURATIONS_S = [3.2, 3.2, 3.2];
+// Sized for the current script density (2 joined bullets/part + hook/
+// bridge/loop framing - see buildPartLine/applyBridgeLine) so the no-audio
+// fallback (narration failed/unconfigured) still paces out toward the real
+// ~30s target instead of the old terse-clip timing.
+const DEFAULT_BEAT_DURATIONS_S = [10, 10, 10];
 
 // A FLOOR, not a target to hit exactly and not a ceiling to truncate
 // down to - real narration should run however long it actually takes to
@@ -144,9 +148,16 @@ const DEFAULT_BEAT_DURATIONS_S = [3.2, 3.2, 3.2];
 // per-line length cap - see SPEECH_MAX_CHARS). This only ever pads UP
 // when real content came out short, added as extra hold time on the LAST
 // beat only (silence there is filled by renderVideo's existing apad) -
-// a natural pause on the closing beat, not mid-clip dead air. A clip
-// with substantial real analysis can and should run past 15s on its own.
-const MIN_CLIP_DURATION_S = 15;
+// a natural pause on the closing beat, not mid-clip dead air. Raised from
+// 15 to 30 per direct request to bring back a fuller, more insightful
+// script (blueprint reference: quiet_exit_text.json's raw, connective
+// narration style) instead of the terse single-bullet-per-part cut that
+// followed the "too long/just reading text" feedback - the fix for that
+// feedback wasn't shorter clips, it was narration that connects real data
+// into an actual observation instead of reciting bullets verbatim (see
+// buildPartLine/applyBridgeLine below). A clip with substantial real
+// analysis can and should run past 30s on its own.
+const MIN_CLIP_DURATION_S = 30;
 function applyMinClipDuration(beatDurations) {
   const total = beatDurations.reduce((sum, d) => sum + d, 0);
   if (total >= MIN_CLIP_DURATION_S) return beatDurations;
@@ -223,10 +234,13 @@ function truncateForHook(text) {
 // natural clause rather than a fragment. Real production feedback on an
 // actual uploaded clip: narration ran too long reading multiple joined
 // bullets verbatim ("reading all the text instead of getting the
-// signal") - tightened back down from 480 (sized for 3 joined bullets)
-// to fit one real bullet plus the hook/loop line, forcing brevity: the
-// single most essential real line per part, not several concatenated.
-const SPEECH_MAX_CHARS = 220;
+// signal") - that complaint was about RECITATION (raw bullets read
+// back-to-back with no connective analysis), not length by itself. Raised
+// back up to fit 2 real bullets joined with a natural connector plus the
+// hook/bridge/loop framing, sized for the 30s target (MIN_CLIP_DURATION_S)
+// - the fix for "just reading all the text" is buildPartLine's connector
+// phrasing below, not capping every part down to a single fragment.
+const SPEECH_MAX_CHARS = 340;
 function truncateForSpeech(text) {
   if (text.length <= SPEECH_MAX_CHARS) return text;
   const cut = text.slice(0, SPEECH_MAX_CHARS);
@@ -263,31 +277,52 @@ function stripNumbers(text) {
     .replace(/\s+([,.;:)])/g, "$1")
     .replace(/\(\s+/g, "(")
     .replace(/^[,.\s]+|[,.\s]+$/g, "")
-    .trim();
+    .trim()
+    // A bullet whose entire pre-parenthetical content was numeric leaves
+    // just "(Fear)"/"(High)" standing alone as an orphaned parenthetical
+    // fragment - not a real sentence, and reads badly once buildPartLine
+    // joins it with a second bullet (e.g. "...(Fear), and SEC Regulation
+    // Crypto delayed..."). Unwrapping a leftover that's ENTIRELY one
+    // parenthetical (nothing outside it) restores it to plain real text
+    // ("Fear") instead of a dangling fragment.
+    .replace(/^\(([^()]*)\)$/, "$1");
 }
 
-// The single most prominent real signal bullet (the FIRST real entry,
-// same "lead item is the headline" assumption the rest of this pipeline
-// already makes elsewhere), spoken with numbers stripped (stripNumbers).
-// Previously joined up to 3 real bullets per part for more spoken
-// duration, but real feedback on an actual uploaded clip was that this
-// read as reciting raw text rather than surfacing the signal - one clean
-// real line per part is the actual "signal," not several bullets
-// concatenated. Returns null (not a fallback string) when the field is
-// genuinely empty, so the caller can skip this part of a combined clip
-// entirely rather than wasting a beat on "no data" filler when the OTHER
-// part has real content to show.
+// The two most prominent real signal bullets (FIRST real entries, same
+// "lead items are the headline" assumption the rest of this pipeline
+// already makes elsewhere), spoken with numbers stripped (stripNumbers)
+// and joined with a plain connector so it reads as one observation, not
+// a bullet list read aloud. Previously capped at 1 bullet after feedback
+// that narration was "just reading all the text instead of getting the
+// signal" - but the real problem there was RECITATION (raw fragments
+// concatenated with no connective tissue), not the presence of a second
+// real data point. Restored to 2 per direct request to bring back a
+// fuller, more insightful script (blueprint: quiet_exit_text.json's raw,
+// connective narration - "X happened, and Y also happened" rather than a
+// flat list). Still capped at 2, not 3-4, so this doesn't regress back
+// into the original complaint. Returns null (not a fallback string) when
+// the field is genuinely empty, so the caller can skip this part of a
+// combined clip entirely rather than wasting a beat on "no data" filler
+// when the OTHER part has real content to show.
 function buildPartLine(items) {
   const real = Array.isArray(items) ? items.filter((s) => typeof s === "string" && s.trim()) : [];
   if (!real.length) return null;
   const cleaned = real
-    .slice(0, 1)
+    .slice(0, 2)
     .map((raw) => {
       const idx = raw.indexOf(":");
       return stripNumbers((idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim());
     })
     .filter(Boolean);
-  return truncateForSpeech(cleaned.join(". "));
+  const joined = truncateForSpeech(cleaned.join(", and "));
+  // Every buildLine function needs to end with real sentence punctuation -
+  // applyLoopLine appends the closer directly onto whatever this returns
+  // with just a space, so without a period the two run together as one
+  // garbled sentence (e.g. "...CLARITY Act Sep And that shift is..."). The
+  // other buildLine functions (buildTechnicalPartLine/buildVerdictLine)
+  // already end in "." themselves; this is real signal text with no
+  // guaranteed trailing punctuation of its own.
+  return /[.!?]$/.test(joined) ? joined : `${joined}.`;
 }
 
 function formatUsd(n) {
@@ -304,11 +339,15 @@ function buildTechnicalPartLine(evidence) {
   const t = evidence.technical;
   if (!t || !Number.isFinite(t.price)) return null;
   const trend = (t.trend || "neutral").toLowerCase();
-  // One real clause, not several stacked together - same brevity fix as
-  // buildPartLine (real feedback: too much reading, not enough signal).
-  // Price+trend is the single most essential real reading; EMA/VWAP/
-  // volume are still real and still visible on screen, just not all
-  // spoken in one breath.
+  // Price+trend plus one more real reading (volume) - two clauses, not
+  // the earlier 4-clause stack (EMA/VWAP/volume/trend all at once) that
+  // drew the original "too much reading" feedback, but also not stripped
+  // all the way back to a single bare fact - restored per direct request
+  // for a fuller, more insightful script. EMA/VWAP stay on screen (visible
+  // in the captured panel) without being spoken in the same breath.
+  if (t.volume && typeof t.volume === "string") {
+    return `${t.ticker} is trading around ${formatUsd(t.price)}, with the trend reading ${trend} and volume running ${t.volume.toLowerCase()}.`;
+  }
   return `${t.ticker} is trading around ${formatUsd(t.price)}, with the trend reading ${trend}.`;
 }
 
@@ -322,7 +361,12 @@ function buildVerdictLine(evidence) {
   const rows = evidence.whatNowRows || [];
   const bias = rows.find((row) => row.label === "OVERALL BIAS");
   if (!bias || !bias.value) return null;
-  return `Overall bias reads ${truncateForSpeech(bias.value)}.`;
+  // Framed as the closing question the blueprint reference ends on
+  // ("...is whether this is just normal profit-taking, or the first sign
+  // that...") rather than a flat status readout - still only the real
+  // OVERALL BIAS value, nothing invented, just posed as the open question
+  // this verdict actually leaves a viewer with.
+  return `So the real question is whether this bias - reading ${truncateForSpeech(bias.value)} - holds, or whether that changes fast.`;
 }
 
 // Two combined clips (each covering 3 real data categories) instead of
@@ -339,6 +383,7 @@ const CLIP_TEMPLATES = [
     id: "money-macro-chart",
     label: "MONEY, MACRO & CHART",
     hookLine: "Something's shifting in institutional money before most people notice —",
+    bridgeLine: "But zoom out to the macro backdrop, and the picture gets more complicated —",
     loopLine: "And that shift is exactly why the chart's worth watching here.",
     parts: [
       { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 0, buildLine: (signal) => buildPartLine(signal.etf_flows) },
@@ -350,6 +395,7 @@ const CLIP_TEMPLATES = [
     id: "narrative-sentiment-verdict",
     label: "NARRATIVE, SENTIMENT & VERDICT",
     hookLine: "It's not as simple as bullish or bearish —",
+    bridgeLine: "But here's what's interesting - sentiment doesn't always move in lockstep with the story —",
     loopLine: "Proving once again it's rarely that simple.",
     parts: [
       { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 2, buildLine: (signal) => buildPartLine(signal.x_narratives) },
@@ -395,6 +441,23 @@ function applyLoopLine(template, parts) {
   if (!parts.length || parts[parts.length - 1].text.startsWith("No notable")) return parts;
   const last = parts.length - 1;
   return parts.map((part, i) => (i === last ? { ...part, text: `${part.text} ${template.loopLine}` } : part));
+}
+
+// Mid-clip pivot: a short, fixed, non-factual transition sentence (same
+// zero-extra-TTS-call approach as the hook/loop lines) prefixed onto the
+// SECOND real part's text, giving the script an actual turn instead of
+// three flat, disconnected facts back to back - the "but here's what's
+// interesting" beat the blueprint reference (quiet_exit_text.json) uses
+// to connect its own real data points into one observation rather than a
+// list. Applied to the second entry of the RESOLVED (post-filter) parts
+// array, not the second template part - if the first template part had no
+// real data and got dropped, the second surviving real part still gets
+// the pivot, since it's still functioning as the clip's second beat.
+// Skipped when there's no second real part to pivot into, or on the "no
+// data" fallback line.
+function applyBridgeLine(template, parts) {
+  if (parts.length < 2 || parts[1].text.startsWith("No notable")) return parts;
+  return parts.map((part, i) => (i === 1 ? { ...part, text: `${template.bridgeLine} ${part.text}` } : part));
 }
 
 // Bold hook title for a themed clip's first 3 seconds - the template's own
@@ -930,9 +993,12 @@ export async function generateAndUploadClip(signal) {
         // Each combined clip's real parts for this signal - a part with no
         // real data is dropped rather than filled with filler (see
         // resolveClipParts), then the curiosity-gap opener is prefixed
-        // onto the first real line (applyHookLine).
-        const parts = applyLoopLine(template, applyHookLine(template, resolveClipParts(template, signal, evidence)));
+        // onto the first real line (applyHookLine), with a mid-clip pivot
+        // (applyBridgeLine) prefixed onto the second real line for actual
+        // narrative connective tissue instead of three flat facts in a row.
+        const parts = applyLoopLine(template, applyBridgeLine(template, applyHookLine(template, resolveClipParts(template, signal, evidence))));
         const scripts = parts.map((p) => p.text);
+        console.log(`[CLIPPER] ${template.id} script:\n${scripts.map((s, i) => `  [${i}] ${s}`).join("\n")}`);
         const narrationSegments = await synthesizeNarrationSegments(scripts, frameDir);
 
         let narrationPath = null;
