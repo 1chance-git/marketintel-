@@ -94,6 +94,42 @@ const INFO_CROP = "w='iw*0.1383':h='ih*0.091':x=0:y='ih*0.2007'";
 const ROTATOR_CROP_ZOOM = "w='iw*0.2944':h='ih*0.46':x='iw*0.6928':y='ih*0.137'";
 const INFO_CROP_ZOOM = "w='iw*0.127236':h='ih*0.08372':x='iw*0.005532':y='ih*0.20434'";
 
+// Real user feedback on a produced clip: "Panel is too text-heavy" /
+// "Visual doesn't match what's narrated". Root cause: the rotator panel
+// can render up to MAX_ROWS_PER_SECTION (4) real bullets per slide (see
+// index.html's renderRows/renderMacroPulse/renderSentimentBlock), but
+// buildPartLine below only ever narrates the FIRST real bullet - so the
+// static ROTATOR_CROP was showing 2-4x more text than was ever spoken.
+// A fixed fraction can't fix this correctly since real bullet text length
+// varies signal to signal (same reasoning as ROTATOR_CROP/INFO_CROP's own
+// "measure real rects, don't guess" derivation above). Instead,
+// __mktRotatorTightRect() (index.html) measures the real union bbox of
+// just the header + (DIRECTION row if present) + the FIRST content row -
+// i.e. exactly what gets narrated - fresh at each beat's capture time, and
+// this converts that rect into the same iw*/ih* crop-filter string shape
+// used everywhere else in this file. A small fixed padding margin (in
+// real source px, not a fraction) keeps the crop from clipping text
+// descenders/anti-aliased edges right at the measured bbox.
+const TIGHT_CROP_PAD_PX = 10;
+function rectToCropFilter(rect) {
+  const x = Math.max(0, rect.x - TIGHT_CROP_PAD_PX);
+  const y = Math.max(0, rect.y - TIGHT_CROP_PAD_PX);
+  const w = Math.min(SOURCE_WIDTH - x, rect.width + TIGHT_CROP_PAD_PX * 2);
+  const h = Math.min(SOURCE_HEIGHT - y, rect.height + TIGHT_CROP_PAD_PX * 2);
+  return `w='iw*${(w / SOURCE_WIDTH).toFixed(6)}':h='ih*${(h / SOURCE_HEIGHT).toFixed(6)}':` +
+    `x='iw*${(x / SOURCE_WIDTH).toFixed(6)}':y='ih*${(y / SOURCE_HEIGHT).toFixed(6)}'`;
+}
+// Same ~8% tighter/recentered algebra used to derive ROTATOR_CROP_ZOOM from
+// ROTATOR_CROP, applied to the real measured rect instead of the static one.
+function rectToCropFilterZoom(rect) {
+  const shrink = 0.92;
+  const zw = rect.width * shrink;
+  const zh = rect.height * shrink;
+  const zx = rect.x + (rect.width - zw) / 2;
+  const zy = rect.y + (rect.height - zh) / 2;
+  return rectToCropFilter({ x: zx, y: zy, width: zw, height: zh });
+}
+
 // Fallback timing only - used when narration isn't available/fails
 // entirely (see synthesizeNarrationSegments's all-or-nothing behavior), so
 // a combined clip still has a sensible pace with no real audio driving it.
@@ -736,12 +772,25 @@ async function captureFramesForKeyframes(page, frameDir, keyframes) {
   // second of any timer override - far faster than the 10s window that
   // caused the original bug - at a fraction of the per-frame cost.
   let lastForcedSlide = null;
+  // Tracks which keyframe index has already had its crop replaced with a
+  // real dynamic measurement, so that's done once per beat (right after
+  // forcing its slide into view) rather than every captured frame - same
+  // per-frame-cost reasoning as the rotator-slide reassertion above.
+  let lastMeasuredBeatIndex = null;
   for (let i = 0; i < totalFrames; i++) {
     const elapsedS = i / CLIP_FPS;
-    const beat = keyframes.find((k) => elapsedS >= k.start && elapsedS < k.end) ?? keyframes[keyframes.length - 1];
+    const beatIndex = keyframes.findIndex((k) => elapsedS >= k.start && elapsedS < k.end);
+    const beat = beatIndex !== -1 ? keyframes[beatIndex] : keyframes[keyframes.length - 1];
     if (beat.rotatorSlide !== null && (beat.rotatorSlide !== lastForcedSlide || i % 15 === 0)) {
       await page.evaluate((slide) => window.__mktRotatorGoTo?.(slide), beat.rotatorSlide);
       lastForcedSlide = beat.rotatorSlide;
+    }
+    if (beat.rotatorSlide !== null && beatIndex !== -1 && beatIndex !== lastMeasuredBeatIndex) {
+      const rect = await page.evaluate(() => window.__mktRotatorTightRect?.() ?? null);
+      if (rect) {
+        beat.crop = beatIndex % 2 === 0 ? rectToCropFilter(rect) : rectToCropFilterZoom(rect);
+      }
+      lastMeasuredBeatIndex = beatIndex;
     }
     const frameNum = String(i).padStart(5, "0");
     await page.screenshot({ path: path.join(frameDir, `frame_${frameNum}.jpg`), type: "jpeg", quality: 85 });
