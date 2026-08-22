@@ -272,6 +272,39 @@ function deriveNarrativeArc(signal, evidence) {
   ];
 }
 
+// A short, bold hook title for the opening 3 seconds - reuses the exact
+// same real, already-computed arc beats (deriveNarrativeArc) rather than
+// composing new text, so this can't diverge from or fabricate beyond what
+// the ETF/narrative/direction beats already say. Prefers the narrative
+// beat (usually the punchiest, most specific line) then the ETF beat, then
+// direction; falls back to the product name itself (real, not invented)
+// only when every beat came back as its own no-data fallback label.
+const ARC_FALLBACK_LABELS = new Set(["ETF FLOW UPDATE", "NARRATIVE PULSE", "MARKET STATE"]);
+
+// arc beat text is already uppercase-truncated to OVERLAY_MAX_CHARS (36) for
+// the old fontsize-42 caption design. The hook title renders much larger
+// (fontsize 64, see buildFilterComplex) to read as a bold title rather than
+// a caption, so it needs a tighter cap to still fit the 1080px-wide frame -
+// scaling from the bbox-verified fontsize-42/~40-char and fontsize-58/~30-
+// char fit points (see truncateForOverlay's comment) puts fontsize 64 at
+// ~24 chars with margin.
+const HOOK_MAX_CHARS = 24;
+function truncateForHook(text) {
+  if (text.length <= HOOK_MAX_CHARS) return text;
+  const cut = text.slice(0, HOOK_MAX_CHARS - 3);
+  const lastSpace = cut.lastIndexOf(" ");
+  const base = lastSpace > HOOK_MAX_CHARS * 0.5 ? cut.slice(0, lastSpace) : cut;
+  return `${base}...`;
+}
+
+function buildHookTitle(arc) {
+  const [etf, , narrative, direction] = arc;
+  const candidates = [narrative, etf, direction];
+  const real = candidates.find((beat) => beat?.text && !ARC_FALLBACK_LABELS.has(beat.text));
+  if (real) return { text: truncateForHook(real.text), color: real.color };
+  return { text: "MARKET INTELLIGENCE NETWORK".slice(0, HOOK_MAX_CHARS), color: "#FFFFFF" };
+}
+
 // Sentiment clause appended to a real signal line - reuses the exact same
 // BULLISH_WORDS/BEARISH_WORDS keyword match deriveColor already applies
 // for on-screen color-coding, just spoken as an active verb phrase instead
@@ -625,7 +658,7 @@ function formatClipDate(isoTimestamp) {
   return `${datePart.toUpperCase()} · ${timePart}`;
 }
 
-function buildFilterComplex(keyframes, dateText) {
+function buildFilterComplex(keyframes, dateText, hookTitle) {
   // Per-keyframe branch, not a single time-varying crop: verified locally
   // (real ffmpeg 5.1.9 render, not assumed) that ffmpeg's crop filter only
   // evaluates its OWN OUTPUT w/h once at filter init - x/y can vary per
@@ -675,11 +708,24 @@ function buildFilterComplex(keyframes, dateText) {
   // here) can't account for. Narration alone carries the same real
   // information reliably; the one exception kept is the small persistent
   // date stamp below, which has no per-beat timing to get wrong.
-  const dateStage = dateText
-    ? `[vconcat0]drawtext=fontfile=${FONT_PATH}:text='${escapeDrawtext(dateText)}':expansion=none:fontcolor=white@0.85:fontsize=26:borderw=2:bordercolor=black:x=w-text_w-24:y=h-text_h-40[vout]`
-    : "[vconcat0]copy[vout]";
+  // Bold, high-contrast hook title for the first 3 seconds only
+  // (enable='lte(t,3)') - a static overlay with no per-beat timing to get
+  // wrong, unlike the per-beat captions above that were tried and reverted
+  // twice. box=1 draws an opaque black backing behind the text so it stays
+  // legible regardless of what's under it (bright chart lines, light UI
+  // panels, etc.), on top of the usual white-fill/black-border combo.
+  const hookStage = hookTitle
+    ? `[vconcat0]drawtext=fontfile=${FONT_PATH}:text='${escapeDrawtext(hookTitle.text)}':expansion=none:` +
+      `fontcolor=${hookTitle.color}:fontsize=64:borderw=4:bordercolor=black:` +
+      `box=1:boxcolor=black@0.55:boxborderw=20:` +
+      `x=(w-text_w)/2:y=140:enable='lte(t,3)'[vhook0]`
+    : "[vconcat0]copy[vhook0]";
 
-  return [`[0:v]${splitStage}`, ...branchStages, concatStage, dateStage].join(";\n");
+  const dateStage = dateText
+    ? `[vhook0]drawtext=fontfile=${FONT_PATH}:text='${escapeDrawtext(dateText)}':expansion=none:fontcolor=white@0.85:fontsize=26:borderw=2:bordercolor=black:x=w-text_w-24:y=h-text_h-40[vout]`
+    : "[vhook0]copy[vout]";
+
+  return [`[0:v]${splitStage}`, ...branchStages, concatStage, hookStage, dateStage].join(";\n");
 }
 
 // Reads the exact numbers/labels the dashboard itself has already computed
@@ -799,7 +845,7 @@ async function captureFramesForKeyframes(page, frameDir, keyframes) {
   }
 }
 
-function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText) {
+function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, hookTitle) {
   return new Promise((resolve, reject) => {
     const durationS = keyframes[keyframes.length - 1].end;
     // Real ElevenLabs narration when available, silent track otherwise -
@@ -819,7 +865,7 @@ function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText) {
       "-framerate", String(CLIP_FPS),
       "-i", path.join(frameDir, "frame_%05d.jpg"),
       ...audioInputArgs,
-      "-filter_complex", buildFilterComplex(keyframes, dateText),
+      "-filter_complex", buildFilterComplex(keyframes, dateText, hookTitle),
       "-map", "[vout]", "-map", "1:a:0", "-af", "apad",
       // tune=stillimage + a lower CRF (higher quality/bitrate) for
       // graphics-first rendering - this content is flat-color dashboard
@@ -938,7 +984,8 @@ export async function generateAndUploadClip(signal) {
 
     const outputPath = path.join(frameDir, "clip.mp4");
     const dateText = formatClipDate(signal.timestamp);
-    await renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText);
+    const hookTitle = buildHookTitle(arc);
+    await renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, hookTitle);
     console.log("[RENDER COMPLETE]");
 
     const videoBuffer = await readFile(outputPath);
