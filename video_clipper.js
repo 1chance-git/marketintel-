@@ -101,6 +101,23 @@ const INFO_CROP_ZOOM = "w='iw*0.127236':h='ih*0.08372':x='iw*0.005532':y='ih*0.2
 // CLIP_TEMPLATES entry combines exactly 2 sub-topics - see below).
 const DEFAULT_BEAT_DURATIONS_S = [3.2, 3.2];
 
+// Every clip should run at least 15s - two short real narration segments
+// (each often just one stripped-down sentence) can otherwise add up to
+// well under that. Rather than forcing longer/more narration (which would
+// mean more ElevenLabs credits per clip, working against the quota fix),
+// any shortfall is added as extra hold time on the LAST beat only - the
+// visual panel just stays on screen a bit longer after narration ends
+// (silence there is filled by renderVideo's existing apad), which reads
+// as a natural pause on the closing beat rather than mid-clip dead air.
+const MIN_CLIP_DURATION_S = 15;
+function applyMinClipDuration(beatDurations) {
+  const total = beatDurations.reduce((sum, d) => sum + d, 0);
+  if (total >= MIN_CLIP_DURATION_S) return beatDurations;
+  const out = [...beatDurations];
+  out[out.length - 1] += MIN_CLIP_DURATION_S - total;
+  return out;
+}
+
 // Builds the KEYFRAMES array for one clip from real per-beat narration
 // durations (or the DEFAULT_BEAT_DURATIONS_S fallback) and each beat's own
 // crop/rotator-slide (beatMeta, one entry per part - see CLIP_TEMPLATES).
@@ -818,11 +835,11 @@ export async function generateAndUploadClip(signal) {
         let narrationPath = null;
         let keyframes;
         if (narrationSegments) {
-          keyframes = buildKeyframes(narrationSegments.map((s) => s.duration), parts);
+          keyframes = buildKeyframes(applyMinClipDuration(narrationSegments.map((s) => s.duration)), parts);
           narrationPath = path.join(frameDir, "narration.mp3");
           await concatAudioSegments(narrationSegments, narrationPath);
         } else {
-          keyframes = buildKeyframes(DEFAULT_BEAT_DURATIONS_S.slice(0, scripts.length), parts);
+          keyframes = buildKeyframes(applyMinClipDuration(DEFAULT_BEAT_DURATIONS_S.slice(0, scripts.length)), parts);
         }
 
         // Real per-beat narration duration now drives how long each beat's
