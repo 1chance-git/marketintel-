@@ -732,16 +732,22 @@ async function captureFramesForKeyframes(page, frameDir, keyframes) {
   // the auto-rotation is often already close to its own 10s mark -
   // confirmed locally: a real render showed the SAME slide for an entire
   // 2-beat clip because the forced slide-0 cue lost a race with the
-  // timer. Reasserting the current beat's real rotatorSlide on every
-  // captured frame (cheap - showRotatorSlide is a synchronous hidden-
-  // attribute toggle, no fade/async work) makes any such override
-  // self-correct within one frame instead of persisting for the rest of
-  // the clip.
+  // timer. Reasserting the current beat's real rotatorSlide corrects any
+  // such override. Doing that on EVERY captured frame (the first fix)
+  // turned out to add real overhead in production - each reassertion is a
+  // page.evaluate() CDP round-trip, and a 15s clip at 30fps is up to 450
+  // of them, which measurably slowed real capture well past its nominal
+  // duration. Reasserting once per beat change plus roughly twice a
+  // second (every 15 frames) instead still self-corrects within half a
+  // second of any timer override - far faster than the 10s window that
+  // caused the original bug - at a fraction of the per-frame cost.
+  let lastForcedSlide = null;
   for (let i = 0; i < totalFrames; i++) {
     const elapsedS = i / CLIP_FPS;
     const beat = keyframes.find((k) => elapsedS >= k.start && elapsedS < k.end) ?? keyframes[keyframes.length - 1];
-    if (beat.rotatorSlide !== null) {
+    if (beat.rotatorSlide !== null && (beat.rotatorSlide !== lastForcedSlide || i % 15 === 0)) {
       await page.evaluate((slide) => window.__mktRotatorGoTo?.(slide), beat.rotatorSlide);
+      lastForcedSlide = beat.rotatorSlide;
     }
     const frameNum = String(i).padStart(5, "0");
     await page.screenshot({ path: path.join(frameDir, `frame_${frameNum}.jpg`), type: "jpeg", quality: 85 });
