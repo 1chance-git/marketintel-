@@ -17,7 +17,7 @@
 // ---------------------------------------------------------------------------
 
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import puppeteer from "puppeteer";
@@ -81,34 +81,24 @@ const ROTATOR_CROP = "w='iw*0.32':h='ih*0.50':x='iw*0.68':y='ih*0.117'";
 // converted to iw*/ih* fractions.
 const INFO_CROP = "w='iw*0.1383':h='ih*0.091':x=0:y='ih*0.2007'";
 
-// Also doubles as a 4-beat narrative arc (setup -> turning point ->
-// confirmation -> outcome), matching the pacing style of a reference clip -
-// but unlike that reference, the text filling each beat is always derived
-// live below (deriveNarrativeArc), never fixed/fabricated copy. Crop and
-// rotator-slide assignment per beat is fixed; timing is not - each beat's
-// on-screen window is now driven by that beat's own real narration
-// duration (see buildKeyframes), so the clip's total length varies with
-// how much there actually is to say, rather than a fixed 11s regardless of
-// content.
-const BEAT_CROPS = [ROTATOR_CROP, INFO_CROP, ROTATOR_CROP, ROTATOR_CROP];
-const BEAT_ROTATOR_SLIDES = [0, null, 2, 3];
 // Fallback timing only - used when narration isn't available/fails
-// entirely (see synthesizeNarrationSegments's all-or-nothing behavior),
-// so the clip still has a sensible default pace with no real audio driving
-// it.
-const DEFAULT_BEAT_DURATIONS_S = [2.7, 2.8, 2.7, 2.8];
+// entirely (see synthesizeNarrationSegments's all-or-nothing behavior), so
+// a themed clip still has a sensible pace with no real audio driving it.
+// Each themed clip has 1-3 beats (one per real bullet found, see
+// buildFieldNarration) rather than a fixed 4, so this is sized for the max.
+const DEFAULT_BEAT_DURATIONS_S = [3.2, 3.2, 3.2];
 
-// Builds the actual KEYFRAMES array for one clip from real per-beat
-// durations (either each beat's real synthesized narration length, or the
-// DEFAULT_BEAT_DURATIONS_S fallback) - replaces the old fixed-timing
-// module-level constant now that timing is content-driven instead of
-// hardcoded.
-function buildKeyframes(beatDurations) {
+// Builds the KEYFRAMES array for one themed clip from real per-beat
+// narration durations (or the DEFAULT_BEAT_DURATIONS_S fallback). Unlike
+// the old 4-beat arc, every beat in a themed clip shares the same crop and
+// rotator slide - each clip stays on its one real data category the whole
+// way through rather than cutting between panels.
+function buildKeyframes(beatDurations, crop, rotatorSlide) {
   let t = 0;
-  return beatDurations.map((duration, i) => {
+  return beatDurations.map((duration) => {
     const start = t;
     t += duration;
-    return { start, end: t, crop: BEAT_CROPS[i], rotatorSlide: BEAT_ROTATOR_SLIDES[i] };
+    return { start, end: t, crop, rotatorSlide };
   });
 }
 
@@ -143,354 +133,133 @@ function deriveColor(text) {
   return "#FFFFFF";
 }
 
-// fontsize was 58 originally; real signal text (e.g. "RECENT OUTFLOWS ON
-// BTC, SELECTIVE ETH INFLOWS") needed truncating well before the 30-char
-// width limit, and a flat character-count cut landed mid-word ("...SEL...")
-// which reads as broken, not just short - that's what "the overlay is
-// still clipped" meant (not literal off-canvas clipping - the bbox-verified
-// 30-char limit did keep text on-canvas - but an ugly mid-word cut looks
-// exactly like clipping to a viewer). Fixed two ways: dropped fontsize to
-// 42 for real headroom (verified via ffmpeg's bbox filter: real signal
-// text up to ~40 chars fits with margin at this size, vs ~30 at 58), and
-// truncateForOverlay now backs up to the last whole word instead of
-// cutting mid-word.
-const OVERLAY_MAX_CHARS = 36;
-
-function truncateForOverlay(text) {
-  const upper = text.toUpperCase();
-  if (upper.length <= OVERLAY_MAX_CHARS) return upper;
-  const cut = upper.slice(0, OVERLAY_MAX_CHARS - 3);
-  const lastSpace = cut.lastIndexOf(" ");
-  // Only back up to the last word if that doesn't throw away most of the
-  // budget (e.g. one long hyphenless word) - otherwise a hard cut is less
-  // jarring than truncating down to just a couple of words.
-  const base = lastSpace > OVERLAY_MAX_CHARS * 0.5 ? cut.slice(0, lastSpace) : cut;
-  return `${base}...`;
-}
-
-// Real signal text, not fabricated copy: same "Label: detail" convention
-// index.html's splitLabelValue() already relies on for these fields - take
-// the detail half, drop an overlong label prefix, and fall back to a
-// neutral (non-claim) line if a field is genuinely empty rather than
-// inventing content. Kept separate from deriveLine (which additionally
-// truncates/uppercases for the on-screen caption) so buildAnalystNarration
-// below can read the same real detail text in full, natural sentences
-// instead of a caption-truncated fragment.
-function extractDetail(items, fallback) {
-  const raw = Array.isArray(items) ? items.find((s) => typeof s === "string" && s.trim()) : null;
-  if (!raw) return fallback;
-  const idx = raw.indexOf(":");
-  return (idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim();
-}
-
-// Same institution-naming preference as buildAnalystNarrationSegments
-// (extractInstitutions/joinNames, defined below) - so the on-screen
-// caption and the spoken narration for the same beat always tell the same
-// story. Before this, the caption showed the raw truncated signal text
-// (which could include a bare fund ticker like "GBTC") while the
-// narration - once it started naming real institutions - could say
-// "Grayscale" for the exact same beat, a real mismatch between what's
-// shown and what's said.
-function deriveLine(items, fallback) {
-  const raw = extractDetail(items, fallback);
-  const institutions = extractInstitutions(raw);
-  if (institutions.length) {
-    return truncateForOverlay(joinNames(institutions));
-  }
-  return truncateForOverlay(raw);
-}
-
-// The BTC-chart and Direction beats used to be an arbitrary truncated line
-// from system_macro/sentiment - often not about BTC's price action at all,
-// and disconnected from what the cropped panel actually showed at that
-// moment. Both are now built from the exact numbers/labels visible
-// on-screen in that frame (see readOnScreenEvidence below), so the caption
-// is always evidence the viewer can see for themselves, not a
-// paraphrase of an unrelated sentence.
-//
-// Framed explicitly as the price's own reaction (this beat sits right
-// after the ETF-flow beat in the arc) - but deliberately says "reacts",
-// not "reacts to [ETF flows]" or any other implied cause. Whether that
-// specific price move was actually driven by the ETF flow, the narrative,
-// or something else entirely isn't something this pipeline computes or
-// verifies, so it must not claim it. Color comes directly from the real
-// sign of changeNum (more precise than deriveColor's keyword matching,
-// which was built for free-text signal lines, not a number we already
-// have authoritatively) - green/red only when there's an actual real
-// number to back it, white when price data isn't available.
-function buildChartLine(evidence) {
-  if (!evidence.btcPrice || evidence.btcPrice === "DATA UNAVAILABLE") {
-    return { text: "BTC/USD LIVE CHART", color: "#FFFFFF" };
-  }
-  const changeNum = parseFloat(evidence.btcChange);
-  const hasChange = Number.isFinite(changeNum);
-  const changeText = hasChange ? `${changeNum >= 0 ? "UP" : "DOWN"} ${Math.abs(changeNum).toFixed(2)}%` : null;
-  const trend = evidence.trend && evidence.trend !== "—" ? evidence.trend.toUpperCase() : null;
-  const parts = ["BTC REACTS", changeText, trend ? `· ${trend}` : null].filter(Boolean);
-  const color = hasChange ? (changeNum >= 0 ? "#00FF00" : "#FF4444") : "#FFFFFF";
-  return { text: truncateForOverlay(parts.join(" ")), color };
-}
-
-function buildDirectionLine(evidence) {
-  if (!evidence.direction) return "MARKET STATE";
-  return truncateForOverlay(`DIRECTION: ${evidence.direction}`);
-}
-
-// One {text, color} beat per KEYFRAMES panel, in the same order: ETF/
-// Institutional Flow, TREND/VOLUME info panel, Narrative Shift, Direction/
-// Market State - also read top-to-bottom as a 4-beat arc (setup -> price
-// reaction -> confirmation -> outcome). The ETF and Narrative beats come
-// from the real Grok signal text (already the exact evidence that panel
-// displays), each colored via deriveColor's keyword match; the info-panel
-// beat comes from buildChartLine, which already picks its own color from
-// the real price sign (see its comment - more precise than keyword
-// matching for a number we already have exactly); Direction comes from
-// buildDirectionLine's DOM read, colored via deriveColor same as the text
-// beats.
-function deriveNarrativeArc(signal, evidence) {
-  // Color is classified from the raw, untruncated signal text (same text
-  // buildAnalystNarrationSegments' sentimentClause classifies) - NOT from
-  // the display text deriveLine returns. Those diverge in two ways that
-  // silently broke the caption/narration match this pipeline is supposed
-  // to guarantee: truncateForOverlay's 36-char cap can cut a sentiment
-  // keyword off before deriveColor ever sees it, and when deriveLine finds
-  // a real institution name, the display text becomes just that name
-  // (e.g. "BlackRock") which never contains a sentiment word at all - so a
-  // real bullish signal about BlackRock inflows could render with a
-  // neutral white caption while narration says "bullish" for the exact
-  // same beat.
-  const etfRaw = extractDetail(signal.etf_flows, "ETF FLOW UPDATE");
-  const narrativeRaw = extractDetail(signal.x_narratives, "NARRATIVE PULSE");
-  const etfText = deriveLine(signal.etf_flows, "ETF FLOW UPDATE");
-  const narrativeText = deriveLine(signal.x_narratives, "NARRATIVE PULSE");
-  const directionText = buildDirectionLine(evidence);
-  return [
-    { text: etfText, color: deriveColor(etfRaw) },
-    buildChartLine(evidence),
-    { text: narrativeText, color: deriveColor(narrativeRaw) },
-    { text: directionText, color: deriveColor(directionText) },
-  ];
-}
-
-// A short, bold hook title for the opening 3 seconds - reuses the exact
-// same real, already-computed arc beats (deriveNarrativeArc) rather than
-// composing new text, so this can't diverge from or fabricate beyond what
-// the ETF/narrative/direction beats already say. Prefers the narrative
-// beat (usually the punchiest, most specific line) then the ETF beat, then
-// direction; falls back to the product name itself (real, not invented)
-// only when every beat came back as its own no-data fallback label.
-const ARC_FALLBACK_LABELS = new Set(["ETF FLOW UPDATE", "NARRATIVE PULSE", "MARKET STATE"]);
-
-// arc beat text is already uppercase-truncated to OVERLAY_MAX_CHARS (36) for
-// the old fontsize-42 caption design. The hook title renders much larger
-// (fontsize 64, see buildFilterComplex) to read as a bold title rather than
-// a caption, so it needs a tighter cap to still fit the 1080px-wide frame -
-// scaling from the bbox-verified fontsize-42/~40-char and fontsize-58/~30-
-// char fit points (see truncateForOverlay's comment) puts fontsize 64 at
-// ~24 chars with margin.
+// Five focused single-topic clips instead of one multi-beat arc - each
+// stays on one real data category the whole time (one crop/rotator-slide
+// for all its beats), matching the 5 themes requested: institutional/ETF
+// flow, macro/Fear&Greed, technical indicators, narrative/catalyst, and
+// overall sentiment. rotatorSlide indices match index.html's own rotator
+// order (etf=0, macro=1, narrative=2, sentiment=3); technical-analysis has
+// no rotator slide of its own - it's the TREND/VOLUME/EMA/VWAP info panel,
+// which is visible independent of rotator state.
 const HOOK_MAX_CHARS = 24;
 function truncateForHook(text) {
-  if (text.length <= HOOK_MAX_CHARS) return text;
-  const cut = text.slice(0, HOOK_MAX_CHARS - 3);
+  const upper = text.toUpperCase();
+  if (upper.length <= HOOK_MAX_CHARS) return upper;
+  const cut = upper.slice(0, HOOK_MAX_CHARS - 3);
   const lastSpace = cut.lastIndexOf(" ");
   const base = lastSpace > HOOK_MAX_CHARS * 0.5 ? cut.slice(0, lastSpace) : cut;
   return `${base}...`;
 }
 
-function buildHookTitle(arc) {
-  const [etf, , narrative, direction] = arc;
-  const candidates = [narrative, etf, direction];
-  const real = candidates.find((beat) => beat?.text && !ARC_FALLBACK_LABELS.has(beat.text));
-  if (real) return { text: truncateForHook(real.text), color: real.color };
-  return { text: "MARKET INTELLIGENCE NETWORK".slice(0, HOOK_MAX_CHARS), color: "#FFFFFF" };
+// Narration-length truncation (not the on-screen hook's tight 24-char cap) -
+// word-boundary safe, generous enough that ElevenLabs still reads a full,
+// natural clause rather than a fragment.
+const SPEECH_MAX_CHARS = 220;
+function truncateForSpeech(text) {
+  if (text.length <= SPEECH_MAX_CHARS) return text;
+  const cut = text.slice(0, SPEECH_MAX_CHARS);
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > SPEECH_MAX_CHARS * 0.5 ? cut.slice(0, lastSpace) : cut).trim();
 }
 
-// Sentiment clause appended to a real signal line - reuses the exact same
-// BULLISH_WORDS/BEARISH_WORDS keyword match deriveColor already applies
-// for on-screen color-coding, just spoken as an active verb phrase instead
-// of a color. Restates a classification already made from the real text;
-// adds no new inference on top of it, and stays silent (returns null)
-// rather than guessing when neither keyword set matches. Deliberately
-// doesn't claim trend history ("snapping a streak", "reclaiming a level")
-// since this pipeline has no prior-period data to back that kind of claim -
-// only the current signal's own real classification.
-function sentimentClause(text) {
-  const sentiment = classifySentiment(text);
-  if (sentiment === "bullish") return "reinforcing bullish positioning";
-  if (sentiment === "bearish") return "pressuring sentiment";
-  return null;
+// Real signal bullets, spoken close to verbatim - deliberately NOT run
+// through stripNumbers. Unlike the old single-clip narration (which never
+// spoke raw numbers, by design), these themed clips exist specifically to
+// call out real figures a viewer asked for ("$517M+ BTC ETF inflows",
+// "BlackRock's $285M IBIT dominance") - the numbers are real, sourced
+// directly from the Grok/Supabase signal text, never invented, so
+// speaking them verbatim is still within the no-fabrication rule; it's a
+// different stylistic choice for a different kind of clip, not a
+// loosening of what's allowed to be said.
+function buildFieldNarration(items, categoryLabel) {
+  const real = Array.isArray(items) ? items.filter((s) => typeof s === "string" && s.trim()) : [];
+  if (!real.length) {
+    return [`No notable ${categoryLabel} data is available in this signal.`];
+  }
+  return real.slice(0, 3).map((raw) => {
+    const idx = raw.indexOf(":");
+    const cleaned = (idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim();
+    return truncateForSpeech(cleaned);
+  });
 }
 
-// Active verb phrase for the real % change and sign (evidence.btcChange) -
-// a deterministic threshold on the exact number, not a guess. The word
-// alone carries the magnitude; the digits themselves are never spoken
-// (narration constraint: numbers stay on no screen at all now that the
-// overlay is gone, so audio must convey magnitude qualitatively, not by
-// reading the figure back).
-function verbForChange(pct) {
-  const abs = Math.abs(pct);
-  const up = pct >= 0;
-  if (abs >= 3) return up ? "surged" : "plunged";
-  if (abs >= 1) return up ? "climbed" : "slipped";
-  if (abs >= 0.3) return up ? "edged higher" : "eased lower";
-  return "held steady";
+function formatUsd(n) {
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-// Removes numeric literals (currency amounts, percentages, ranges, plain
-// numbers, and their attached units like "$385-390M" or "24h") from real
-// free-text signal fields before they're spoken. Narration must never read
-// a raw number aloud - only the real qualitative color the number sits
-// inside. Only strips digit-bearing tokens; any other real wording in the
-// same sentence ("led by GBTC redemptions") survives untouched, and
-// nothing is invented to replace what's removed - occasional minor
-// grammatical roughness (a dangling "over the last," where a number used
-// to sit) is an accepted tradeoff for a rule that's simple, deterministic,
-// and impossible to fabricate from, rather than running the real signal
-// text through a rewriting model.
-function stripNumbers(text) {
-  return text
-    .replace(/[$~]?\d[\d,.]*\s*-\s*[$~]?\d[\d,.]*\s*[%A-Za-z]*/g, "")
-    .replace(/[$~]?\d[\d,.]*\s*[%A-Za-z]*/g, "")
-    .replace(/\s{2,}/g, " ")
-    .replace(/\s+([,.;:])/g, "$1")
-    .replace(/^[,.\s]+|[,.\s]+$/g, "")
-    .trim();
+// Technical-analysis narration - built entirely from evidence.technical
+// (real EMA20/EMA50/VWAP/price/trend/volume, read fresh off the chart's
+// own indicator computation via __mktChartDebug - see readOnScreenEvidence
+// and index.html). Every sentence restates a real computed number; nothing
+// here is invented or estimated. Support/resistance levels were considered
+// for this clip but dropped - the dashboard has no real support/resistance
+// computation anywhere (only a current-price line), and inventing levels
+// would violate the no-fabrication rule.
+function buildTechnicalNarration(evidence) {
+  const t = evidence.technical;
+  if (!t || !Number.isFinite(t.price)) {
+    return ["No technical indicator data is available for this signal."];
+  }
+  const segments = [];
+  segments.push(`${t.ticker} is trading around ${formatUsd(t.price)}, with the trend reading ${(t.trend || "neutral").toLowerCase()}.`);
+  if (Number.isFinite(t.ema20) && Number.isFinite(t.ema50)) {
+    const relation = t.ema20 > t.ema50 ? "sitting above" : t.ema20 < t.ema50 ? "sitting below" : "converging with";
+    segments.push(`The twenty-period moving average is ${relation} the fifty-period average, at ${formatUsd(t.ema20)} versus ${formatUsd(t.ema50)}.`);
+  }
+  if (Number.isFinite(t.vwap)) {
+    const relation = t.price > t.vwap ? "above" : t.price < t.vwap ? "below" : "right at";
+    segments.push(`Price is trading ${relation} the volume-weighted average price of ${formatUsd(t.vwap)}.`);
+  }
+  if (t.volume && t.volume !== "—") {
+    segments.push(`Volume is currently reading ${t.volume.toLowerCase()}.`);
+  }
+  return segments;
 }
 
-// Real, fixed real-world facts (which firm issues which spot-Bitcoin-ETF
-// ticker) - same category as FONT_PATH or the ElevenLabs voice ID: used to
-// interpret real signal text, never to invent a claim about market
-// conditions. Lets narration name the actual institution moving money
-// ("BlackRock", "Grayscale") instead of reading a bare fund ticker
-// ("IBIT", "GBTC") a listener has no context for.
-const ETF_TICKER_TO_ISSUER = {
-  IBIT: "BlackRock",
-  GBTC: "Grayscale",
-  FBTC: "Fidelity",
-  ARKB: "ARK Invest",
-  BITB: "Bitwise",
-  BRRR: "Valkyrie",
-  EZBC: "Franklin Templeton",
-  HODL: "VanEck",
-  BTCO: "Invesco",
-  BTCW: "WisdomTree",
-};
-// Known institution/desk names that might appear directly in real signal
-// text (not just via a fund ticker) - matched case-insensitively.
-const KNOWN_INSTITUTIONS = [
-  "BlackRock", "Grayscale", "Fidelity", "ARK Invest", "Bitwise", "Valkyrie",
-  "Franklin Templeton", "Invesco", "WisdomTree", "Jane Street", "Citadel",
-  "Susquehanna", "Cantor Fitzgerald", "JPMorgan", "Goldman Sachs",
-  "Jump Trading", "DRW", "Virtu",
+const CLIP_TEMPLATES = [
+  {
+    id: "etf-flows",
+    label: "INSTITUTIONAL FLOWS",
+    rotatorSlide: 0,
+    crop: ROTATOR_CROP,
+    buildScripts: (signal) => buildFieldNarration(signal.etf_flows, "ETF / institutional flow"),
+  },
+  {
+    id: "macro-sentiment",
+    label: "MACRO PULSE",
+    rotatorSlide: 1,
+    crop: ROTATOR_CROP,
+    buildScripts: (signal) => buildFieldNarration(signal.system_macro, "macro"),
+  },
+  {
+    id: "technical-analysis",
+    label: "TECHNICAL READ",
+    rotatorSlide: null,
+    crop: INFO_CROP,
+    buildScripts: (signal, evidence) => buildTechnicalNarration(evidence),
+  },
+  {
+    id: "narrative-catalyst",
+    label: "NARRATIVE PULSE",
+    rotatorSlide: 2,
+    crop: ROTATOR_CROP,
+    buildScripts: (signal) => buildFieldNarration(signal.x_narratives, "narrative"),
+  },
+  {
+    id: "daily-snapshot",
+    label: "SENTIMENT CHECK",
+    rotatorSlide: 3,
+    crop: ROTATOR_CROP,
+    buildScripts: (signal) => buildFieldNarration(signal.sentiment, "sentiment"),
+  },
 ];
 
-// Extracts the real institution names actually present in a real signal
-// line - either named directly, or via a well-known fund ticker mapped to
-// its real issuer (ETF_TICKER_TO_ISSUER). Never invents a name that isn't
-// actually in the text; returns [] if none match, so the caller falls back
-// to generic phrasing rather than guessing who was involved.
-function extractInstitutions(text) {
-  const found = new Set();
-  for (const name of KNOWN_INSTITUTIONS) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (new RegExp(`\\b${escaped}\\b`, "i").test(text)) found.add(name);
-  }
-  for (const [ticker, issuer] of Object.entries(ETF_TICKER_TO_ISSUER)) {
-    if (new RegExp(`\\b${ticker}\\b`).test(text)) found.add(issuer);
-  }
-  return [...found];
-}
-
-function joinNames(names) {
-  if (names.length === 0) return "";
-  if (names.length === 1) return names[0];
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
-}
-
-// Voiceover narration - one segment per KEYFRAMES beat (Hook/Detail/
-// Context/Close, modeled on a scriptwriting template the user supplied),
-// synthesized and timed separately per beat rather than one continuous
-// pass, so each segment's real spoken duration can drive that beat's own
-// on-screen window (see buildKeyframes) instead of narration and visuals
-// only being loosely ordered the same way. Zero raw numbers are spoken -
-// stripNumbers removes any digit-bearing content from the real free-text
-// signal fields, and the price beat speaks verbForChange's word only, never
-// the percentage itself. Every specific number/claim from either that
-// template or an earlier reference script (a named firm's ETF holdings, a
-// Fear & Greed index reading, EMA support levels, SOL/XRP flow direction,
-// "snapped its streak"-style trend-history claims) is deliberately left
-// out - this pipeline has no real, verifiable source for any of those, and
-// copying them in would fabricate a one-time snapshot as permanent
-// narration. Every fact spoken here is still either a deterministic
-// function of (verbForChange's real sign/magnitude) or a direct
-// restatement of (sentimentClause reuses deriveColor's own keyword
-// classification; "mixed"/"neutral"/"low volume" phrasing restates the
-// literal real value) something already in signal/evidence.
-function buildAnalystNarrationSegments(signal, evidence) {
-  const etfRaw = extractDetail(signal.etf_flows, "no notable ETF flow data available");
-  const narrativeDetail = stripNumbers(extractDetail(signal.x_narratives, "no notable narrative shift reported"));
-
-  // Beat 0 - Hook: WHO is actually moving money, not a bare fund ticker
-  // or leftover filler text. extractInstitutions only ever returns names
-  // it actually found in the real signal text (directly, or via a known
-  // ticker->issuer mapping) - falls back to the old stripped-text phrasing
-  // when no recognized institution is mentioned, rather than guessing one.
-  const institutions = extractInstitutions(etfRaw);
-  const etfClause = sentimentClause(etfRaw);
-  const etfSegment = institutions.length
-    ? `Institutional flows in focus: ${joinNames(institutions)} moving money in Bitcoin ETFs${etfClause ? `, ${etfClause}` : ""}.`
-    : `Institutional flows in focus: ${stripNumbers(etfRaw)}${etfClause ? `, ${etfClause}` : ""}.`;
-
-  // Beat 1 - Detail: the real price action, in active verbs, no digits.
-  // Trend/volume are read from separate DOM elements than the price
-  // ticker (see readOnScreenEvidence) and can be valid even when price
-  // itself briefly isn't - gating the whole beat on btcPrice meant a
-  // missing price alone silenced real trend/volume data that was actually
-  // available. Each piece now speaks independently of the others.
-  const trend = evidence.trend && evidence.trend !== "—" ? evidence.trend.toLowerCase() : null;
-  const volume = evidence.volume && evidence.volume !== "—" ? evidence.volume.toLowerCase() : null;
-  const hasPrice = evidence.btcPrice && evidence.btcPrice !== "DATA UNAVAILABLE";
-  const changeNum = parseFloat(evidence.btcChange);
-  const hasChange = hasPrice && Number.isFinite(changeNum);
-
-  const priceParts = [];
-  if (hasChange) {
-    priceParts.push(`Bitcoin ${verbForChange(changeNum)}${trend ? `, trend reading ${trend}` : ""}.`);
-  } else if (trend) {
-    priceParts.push(`Bitcoin's trend is reading ${trend}.`);
-  } else {
-    priceParts.push("No clear price trend to report on Bitcoin right now.");
-  }
-  if (volume === "low") {
-    priceParts.push("Volume is thin, so this move still lacks conviction.");
-  } else if (volume) {
-    priceParts.push(`Volume is running ${volume}, adding weight behind the move.`);
-  }
-  const priceSegment = priceParts.join(" ");
-
-  // Beat 2 - Context: what's shaping the broader narrative. Same
-  // extractInstitutions treatment as the ETF beat above - names a real
-  // institution/desk actually present in the narrative text when there is
-  // one, falling back to the stripped-text phrasing when there isn't.
-  const narrativeInstitutions = extractInstitutions(narrativeDetail);
-  const narrativeClause = sentimentClause(narrativeDetail);
-  const narrativeSegment = narrativeInstitutions.length
-    ? `On the narrative side, ${joinNames(narrativeInstitutions)} in focus${narrativeClause ? `, ${narrativeClause}` : ""}.`
-    : `On the narrative side, ${narrativeDetail}${narrativeClause ? `, ${narrativeClause}` : ""}.`;
-
-  // Beat 3 - Close: the takeaway.
-  let directionSegment = "Overall sentiment is still forming, with no clear directional read yet.";
-  if (evidence.direction) {
-    const dir = evidence.direction.toLowerCase();
-    directionSegment = `Bottom line, sentiment reads ${dir}`;
-    if (dir.includes("mixed")) directionSegment += " — stay cautious until a clearer signal emerges";
-    else if (dir.includes("bullish")) directionSegment += ", favoring further upside";
-    else if (dir.includes("bearish")) directionSegment += ", favoring further downside";
-    directionSegment += ".";
-  }
-
-  return [etfSegment, priceSegment, narrativeSegment, directionSegment];
+// Bold hook title for a themed clip's first 3 seconds - the template's own
+// fixed label (a real category name, not fabricated data) colored by the
+// real sentiment of what that clip actually says, via the same
+// classifySentiment keyword match used elsewhere.
+function buildHookTitle(template, scripts) {
+  return { text: truncateForHook(template.label), color: deriveColor(scripts.join(" ")) };
 }
 
 const ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech";
@@ -730,12 +499,15 @@ function buildFilterComplex(keyframes, dateText, hookTitle) {
 
 // Reads the exact numbers/labels the dashboard itself has already computed
 // and rendered - BTC price/change (market-board ticker), trend (chart
-// header badge), and DIRECTION (Market Sentiment's own classifyDirection()
+// header badge), DIRECTION (Market Sentiment's own classifyDirection()
 // output, term-direction-value - present in the DOM even while that
 // rotator slide is hidden, since ROTATION_SLIDES only toggles the `hidden`
-// attribute, never removes the content). This is what makes buildChartLine/
-// buildDirectionLine "evidence", not invention - it's a direct read of
-// numbers already on screen, not a new computation.
+// attribute, never removes the content), and `technical` (real EMA20/
+// EMA50/VWAP/price/trend/volume for the active ticker, via
+// window.__mktChartDebug()'s `technical` field - the same real indicator
+// computation index.html's own chart already runs, just also handed back
+// here instead of only drawn as pixels). This is a direct read of numbers
+// already computed/on screen, not a new computation of our own.
 async function readOnScreenEvidence(page) {
   return page.evaluate(() => ({
     btcPrice: document.getElementById("mb-price-BTC")?.textContent?.trim() || null,
@@ -743,6 +515,7 @@ async function readOnScreenEvidence(page) {
     trend: document.getElementById("trend-value")?.textContent?.trim() || null,
     volume: document.getElementById("volume-value")?.textContent?.trim() || null,
     direction: document.querySelector(".term-direction-value")?.textContent?.trim() || null,
+    technical: window.__mktChartDebug?.()?.technical ?? null,
   }));
 }
 
@@ -826,10 +599,12 @@ async function openCapturePage() {
 // duration now, not a fixed offset), same mechanism as before.
 async function captureFramesForKeyframes(page, frameDir, keyframes) {
   const durationS = keyframes[keyframes.length - 1].end;
-  // showRotatorSlide(0) already runs on page load, matching keyframes[0]'s
-  // rotatorSlide - only need to force it for the later keyframes.
+  // Every beat in a themed clip shares one rotatorSlide (see buildKeyframes),
+  // which may not be the page's default (slide 0) - unlike the old 4-beat
+  // arc, this always needs a cue at t=0 too, not just for later beats.
+  // Calling __mktRotatorGoTo repeatedly with the same slide is harmless.
   const pendingRotatorCues = keyframes
-    .filter((k) => k.rotatorSlide !== null && k.start > 0)
+    .filter((k) => k.rotatorSlide !== null)
     .map((k) => ({ atSecond: k.start, slide: k.rotatorSlide }));
 
   const totalFrames = Math.round(durationS * CLIP_FPS);
@@ -912,11 +687,16 @@ function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, h
 // this process only ever runs one generateAndUploadClip at a time by design.
 let clipGenerationInFlight = false;
 
-// Generates a short vertical clip from the given normalized Grok signal
-// (same shape stream_engine.js already writes to grok_data.json) and
-// uploads it to YouTube as an unlisted Short for manual review. Never
-// throws past this function's own logging - a failure here must not take
-// down the caller (the main broadcast pipeline).
+// Generates up to 5 focused, single-topic short clips from the given
+// normalized Grok signal (same shape stream_engine.js already writes to
+// grok_data.json) - one per CLIP_TEMPLATES entry (institutional/ETF flow,
+// macro pulse, technical indicators, narrative/catalyst, overall
+// sentiment) - and uploads each to YouTube as an unlisted Short for manual
+// review. One Chromium/local-HTTP-server pair is opened once and reused
+// across all five clips rather than relaunching per clip. A failure on one
+// template is logged and skipped so it can't take down the other four;
+// never throws past this function's own logging either way - a failure
+// here must not take down the caller (the main broadcast pipeline).
 export async function generateAndUploadClip(signal) {
   if (clipGenerationInFlight) {
     console.log("[CLIPPER] Skipped: a previous clip generation is still in progress");
@@ -936,73 +716,88 @@ export async function generateAndUploadClip(signal) {
   clipGenerationInFlight = true;
   console.log("[CLIPPER STARTED]");
 
-  let frameDir;
+  let parentDir;
   let browser;
   let server;
+  const watchUrls = [];
   try {
     if (!signal || typeof signal !== "object") {
       throw new Error("corrupted or missing signal input");
     }
 
-    frameDir = await mkdtemp(path.join(tmpdir(), "clip-frames-"));
+    parentDir = await mkdtemp(path.join(tmpdir(), "clip-frames-"));
 
     const capture = await openCapturePage();
     ({ browser, server } = capture);
     const { page, evidence } = capture;
 
-    const arc = deriveNarrativeArc(signal, evidence);
+    for (const template of CLIP_TEMPLATES) {
+      try {
+        const frameDir = path.join(parentDir, template.id);
+        await mkdir(frameDir, { recursive: true });
 
-    // Voiceover reads the same real signal/evidence as the on-screen data
-    // (now removed - see buildFilterComplex), phrased as analyst-report
-    // sentences with zero raw numbers spoken (buildAnalystNarrationSegments).
-    // Best effort: a TTS failure/missing API key must not block the rest of
-    // the clip - synthesizeNarrationSegments returns null on any failure,
-    // and DEFAULT_BEAT_DURATIONS_S covers timing so the visual pipeline
-    // still works with no narration at all.
-    const scripts = buildAnalystNarrationSegments(signal, evidence);
-    const narrationSegments = await synthesizeNarrationSegments(scripts, frameDir);
+        // Real per-template signal bullets/technical evidence, close to
+        // verbatim for the flow/macro/narrative/sentiment templates (see
+        // buildFieldNarration's comment on why this differs from the old
+        // zero-numbers narration policy), or real EMA/VWAP/price numbers
+        // for the technical template (buildTechnicalNarration).
+        const scripts = template.buildScripts(signal, evidence);
+        const narrationSegments = await synthesizeNarrationSegments(scripts, frameDir);
 
-    let narrationPath = null;
-    let keyframes;
-    if (narrationSegments) {
-      keyframes = buildKeyframes(narrationSegments.map((s) => s.duration));
-      narrationPath = path.join(frameDir, "narration.mp3");
-      await concatAudioSegments(narrationSegments, narrationPath);
-    } else {
-      keyframes = buildKeyframes(DEFAULT_BEAT_DURATIONS_S);
+        let narrationPath = null;
+        let keyframes;
+        if (narrationSegments) {
+          keyframes = buildKeyframes(narrationSegments.map((s) => s.duration), template.crop, template.rotatorSlide);
+          narrationPath = path.join(frameDir, "narration.mp3");
+          await concatAudioSegments(narrationSegments, narrationPath);
+        } else {
+          keyframes = buildKeyframes(
+            DEFAULT_BEAT_DURATIONS_S.slice(0, scripts.length),
+            template.crop,
+            template.rotatorSlide
+          );
+        }
+
+        // Real per-beat narration duration now drives how long each beat's
+        // visual crop actually stays on screen (via keyframes), so the
+        // frame capture itself can't start until keyframes is known - this
+        // is the second phase of the two-phase capture split (see
+        // openCapturePage). The same open `page` is reused across every
+        // template's capture pass.
+        await captureFramesForKeyframes(page, frameDir, keyframes);
+
+        const outputPath = path.join(frameDir, "clip.mp4");
+        const dateText = formatClipDate(signal.timestamp);
+        const hookTitle = buildHookTitle(template, scripts);
+        await renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, hookTitle);
+        console.log(`[RENDER COMPLETE] ${template.id}`);
+
+        const videoBuffer = await readFile(outputPath);
+        if (videoBuffer.length === 0) {
+          throw new Error("rendered clip buffer is empty/corrupted");
+        }
+
+        console.log(`[UPLOADING TO YOUTUBE] ${template.id}`);
+        // uploadShort/buildShortMetadata only need the plain text (for the
+        // title/description) - the per-beat color is purely a video-render
+        // concern, not relevant to the upload metadata.
+        const watchUrl = await uploadShort(videoBuffer, { signal, overlayText: [template.label, ...scripts] });
+        console.log(`[REVIEW URL GENERATED] ${template.id}: ${watchUrl}`);
+        watchUrls.push(watchUrl);
+      } catch (err) {
+        console.error(`[CLIPPER] ${template.id} failed, skipping: ${err.message}`);
+      }
     }
 
-    // Real per-beat narration duration now drives how long each beat's
-    // visual crop actually stays on screen (via keyframes), so the frame
-    // capture itself can't start until keyframes is known - this is the
-    // second phase of the two-phase capture split (see openCapturePage).
-    await captureFramesForKeyframes(page, frameDir, keyframes);
     await browser.close();
     browser = null;
     server.close();
     server = null;
 
-    const outputPath = path.join(frameDir, "clip.mp4");
-    const dateText = formatClipDate(signal.timestamp);
-    const hookTitle = buildHookTitle(arc);
-    await renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, hookTitle);
-    console.log("[RENDER COMPLETE]");
-
-    const videoBuffer = await readFile(outputPath);
-    if (videoBuffer.length === 0) {
-      throw new Error("rendered clip buffer is empty/corrupted");
-    }
-
-    console.log("[UPLOADING TO YOUTUBE]");
-    // uploadShort/buildShortMetadata only need the plain text (for the
-    // title/description) - the per-beat color is purely a video-render
-    // concern, not relevant to the upload metadata.
-    const watchUrl = await uploadShort(videoBuffer, { signal, overlayText: arc.map((beat) => beat.text) });
-    console.log(`[REVIEW URL GENERATED] ${watchUrl}`);
-    return watchUrl;
+    return watchUrls;
   } catch (err) {
     console.error(`[CLIPPER] Failed: ${err.message}`);
-    return null;
+    return watchUrls.length ? watchUrls : null;
   } finally {
     if (browser) {
       await browser.close().catch(() => {});
@@ -1010,8 +805,10 @@ export async function generateAndUploadClip(signal) {
     if (server) {
       server.close();
     }
-    if (frameDir) {
-      await rm(frameDir, { recursive: true, force: true }).catch(() => {});
+    if (parentDir && !process.env.CLIPPER_KEEP_FRAMES) {
+      await rm(parentDir, { recursive: true, force: true }).catch(() => {});
+    } else if (parentDir) {
+      console.log(`[CLIPPER] CLIPPER_KEEP_FRAMES set - kept ${parentDir}`);
     }
     clipGenerationInFlight = false;
   }
