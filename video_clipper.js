@@ -96,24 +96,25 @@ const INFO_CROP_ZOOM = "w='iw*0.127236':h='ih*0.08372':x='iw*0.005532':y='ih*0.2
 
 // Fallback timing only - used when narration isn't available/fails
 // entirely (see synthesizeNarrationSegments's all-or-nothing behavior), so
-// a themed clip still has a sensible pace with no real audio driving it.
-// Each themed clip has 1-2 beats (one per real bullet found, capped by
-// MAX_NARRATION_SEGMENTS below) rather than a fixed 4, so this is sized
-// for that max - keep in sync if MAX_NARRATION_SEGMENTS ever changes.
+// a combined clip still has a sensible pace with no real audio driving it.
+// Each clip has exactly 1 beat per real part found (max 2, since each
+// CLIP_TEMPLATES entry combines exactly 2 sub-topics - see below).
 const DEFAULT_BEAT_DURATIONS_S = [3.2, 3.2];
 
-// Builds the KEYFRAMES array for one themed clip from real per-beat
-// narration durations (or the DEFAULT_BEAT_DURATIONS_S fallback). Every
-// beat stays on the same rotator slide/data category (unlike the old
-// 4-beat arc, which cut between panels) but alternates between the normal
-// crop and its punched-in zoom variant beat-to-beat for a bit of visual
-// movement.
-function buildKeyframes(beatDurations, crop, zoomCrop, rotatorSlide) {
+// Builds the KEYFRAMES array for one clip from real per-beat narration
+// durations (or the DEFAULT_BEAT_DURATIONS_S fallback) and each beat's own
+// crop/rotator-slide (beatMeta, one entry per part - see CLIP_TEMPLATES).
+// Unlike a single shared crop for the whole clip, each combined clip cuts
+// to a genuinely different real panel between its two sub-topics - that
+// topic change is itself the pattern interrupt, plus each beat uses its
+// part's punched-in zoom variant for a touch of extra movement.
+function buildKeyframes(beatDurations, beatMeta) {
   let t = 0;
   return beatDurations.map((duration, i) => {
     const start = t;
     t += duration;
-    return { start, end: t, crop: i % 2 === 0 ? crop : zoomCrop, rotatorSlide };
+    const meta = beatMeta[i] ?? beatMeta[beatMeta.length - 1];
+    return { start, end: t, crop: i % 2 === 0 ? meta.crop : meta.zoomCrop, rotatorSlide: meta.rotatorSlide };
   });
 }
 
@@ -148,14 +149,13 @@ function deriveColor(text) {
   return "#FFFFFF";
 }
 
-// Six focused single-topic clips instead of one multi-beat arc - each
-// stays on one real data category the whole time (one crop/rotator-slide
-// for all its beats): institutional/ETF flow, macro/Fear&Greed, technical
-// indicators, narrative/catalyst, overall sentiment, and "what matters
-// now". rotatorSlide indices match index.html's own rotator order (etf=0,
-// macro=1, narrative=2, sentiment=3, whatnow=4); technical-analysis has no
-// rotator slide of its own - it's the TREND/VOLUME/EMA/VWAP info panel,
-// which is visible independent of rotator state.
+// Three combined clips instead of six single-topic ones - each pairs two
+// related real data categories into one 2-beat clip (cuts from one real
+// panel to the other mid-clip), covering the same six data sources with
+// half the uploads/render passes and half the ElevenLabs TTS calls per
+// signal. rotatorSlide indices match index.html's own rotator order
+// (etf=0, macro=1, narrative=2, sentiment=3, whatnow=4); technical has no
+// rotator slide of its own - it's the TREND/VOLUME/EMA/VWAP info panel.
 const HOOK_MAX_CHARS = 24;
 function truncateForHook(text) {
   const upper = text.toUpperCase();
@@ -198,151 +198,114 @@ function stripNumbers(text) {
     .trim();
 }
 
-// Real signal bullets, spoken with numbers stripped (stripNumbers) - the
+// Real signal bullet, spoken with numbers stripped (stripNumbers) - the
 // qualitative content is real and verbatim-adjacent ("BTC spot ETFs saw
 // major inflows, led by BlackRock"), the digits themselves are not spoken.
-// Does NOT apply to buildTechnicalNarration - that clip's entire content
-// is real EMA/VWAP/price numbers, so stripping there would leave it
-// saying almost nothing; this only covers the clips that read raw Grok
-// signal text.
-// Capped at 2 bullets/segments per clip (was 3) across every template -
-// each segment is its own ElevenLabs TTS call, and generating 6 clips per
-// signal instead of 1 multiplies real credit usage; this is the cheapest
-// lever to fit the existing ElevenLabs quota without dropping a clip
-// entirely (see MAX_NARRATION_SEGMENTS' other use sites).
-const MAX_NARRATION_SEGMENTS = 2;
-
-function buildFieldNarration(items, categoryLabel) {
-  const real = Array.isArray(items) ? items.filter((s) => typeof s === "string" && s.trim()) : [];
-  if (!real.length) {
-    return [`No notable ${categoryLabel} data is available in this signal.`];
-  }
-  return real.slice(0, MAX_NARRATION_SEGMENTS).map((raw) => {
-    const idx = raw.indexOf(":");
-    const cleaned = (idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim();
-    return truncateForSpeech(stripNumbers(cleaned));
-  });
+// Returns null (not a fallback string) when the field is genuinely empty,
+// so the caller can skip this part of a combined clip entirely rather
+// than wasting a beat on "no data" filler when the OTHER part has real
+// content to show.
+function buildPartLine(items) {
+  const real = Array.isArray(items) ? items.find((s) => typeof s === "string" && s.trim()) : null;
+  if (!real) return null;
+  const idx = real.indexOf(":");
+  const cleaned = (idx !== -1 && idx <= 40) ? real.slice(idx + 1).trim() : real.trim();
+  return truncateForSpeech(stripNumbers(cleaned));
 }
 
 function formatUsd(n) {
   return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-// Technical-analysis narration - built entirely from evidence.technical
-// (real EMA20/EMA50/VWAP/price/trend/volume, read fresh off the chart's
-// own indicator computation via __mktChartDebug - see readOnScreenEvidence
-// and index.html). Every sentence restates a real computed number; nothing
-// here is invented or estimated. Support/resistance levels were considered
-// for this clip but dropped - the dashboard has no real support/resistance
-// computation anywhere (only a current-price line), and inventing levels
-// would violate the no-fabrication rule.
-function buildTechnicalNarration(evidence) {
+// Technical-read line - real price + trend, from evidence.technical (fresh
+// EMA20/EMA50/VWAP/price/trend/volume computed by the chart's own
+// __mktChartDebug hook - see readOnScreenEvidence and index.html). One
+// sentence restating real numbers already computed for the visible chart;
+// nothing invented. Support/resistance was considered and dropped - the
+// dashboard has no real computation for that, only a current-price line.
+function buildTechnicalPartLine(evidence) {
   const t = evidence.technical;
-  if (!t || !Number.isFinite(t.price)) {
-    return ["No technical indicator data is available for this signal."];
-  }
-  const segments = [];
-  segments.push(`${t.ticker} is trading around ${formatUsd(t.price)}, with the trend reading ${(t.trend || "neutral").toLowerCase()}.`);
+  if (!t || !Number.isFinite(t.price)) return null;
+  const trend = (t.trend || "neutral").toLowerCase();
   if (Number.isFinite(t.ema20) && Number.isFinite(t.ema50)) {
-    const relation = t.ema20 > t.ema50 ? "sitting above" : t.ema20 < t.ema50 ? "sitting below" : "converging with";
-    segments.push(`The twenty-period moving average is ${relation} the fifty-period average, at ${formatUsd(t.ema20)} versus ${formatUsd(t.ema50)}.`);
+    const relation = t.ema20 > t.ema50 ? "above" : t.ema20 < t.ema50 ? "below" : "converging with";
+    return `${t.ticker} is trading around ${formatUsd(t.price)}, trend reading ${trend}, twenty-period average sitting ${relation} the fifty-period average.`;
   }
-  if (Number.isFinite(t.vwap)) {
-    const relation = t.price > t.vwap ? "above" : t.price < t.vwap ? "below" : "right at";
-    segments.push(`Price is trading ${relation} the volume-weighted average price of ${formatUsd(t.vwap)}.`);
-  }
-  if (t.volume && t.volume !== "—") {
-    segments.push(`Volume is currently reading ${t.volume.toLowerCase()}.`);
-  }
-  return segments.slice(0, MAX_NARRATION_SEGMENTS);
+  return `${t.ticker} is trading around ${formatUsd(t.price)}, with the trend reading ${trend}.`;
 }
 
-// "What Matters Now" narration - one sentence per real row already shown
-// on that panel (see readOnScreenEvidence's comment: TOP NARRATIVE/TOP
-// SIGNAL/OVERALL BIAS, computed by index.html's own renderWhatNow() from
-// the first real x_narratives/sentiment entries). Speaks each row's real
-// value close to verbatim, same as buildFieldNarration's other themed
-// clips - nothing here is a new judgment call, just the panel's own
-// real text read aloud.
-function buildWhatNowNarration(signal, evidence) {
+// "What Matters Now" verdict line - the real OVERALL BIAS row already
+// computed by index.html's own renderWhatNow() (see readOnScreenEvidence's
+// comment) from the first real x_narratives/sentiment entries. Only the
+// bias row is used here (not TOP NARRATIVE/TOP SIGNAL) so this doesn't
+// duplicate the narrative-catalyst/sentiment lines used elsewhere in the
+// same clip or the other combined clips.
+function buildVerdictLine(evidence) {
   const rows = evidence.whatNowRows || [];
-  if (!rows.length) {
-    return ["No notable market-intelligence summary is available in this signal."];
-  }
-  // TOP NARRATIVE/TOP SIGNAL are raw signal text (same numbers-off rule as
-  // buildFieldNarration); OVERALL BIAS is already a non-numeric label
-  // (RISK-ON/RISK-OFF/MIXED) so stripNumbers is a no-op there.
-  return rows.slice(0, MAX_NARRATION_SEGMENTS).map((row) => `${row.label}: ${truncateForSpeech(stripNumbers(row.value))}.`);
+  const bias = rows.find((row) => row.label === "OVERALL BIAS");
+  if (!bias || !bias.value) return null;
+  return `Overall bias reads ${truncateForSpeech(bias.value)}.`;
 }
 
+// Three combined clips, each pairing two real data categories that tell
+// one coherent story, rather than six single-topic ones - see the comment
+// above HOOK_MAX_CHARS for why. Each part contributes at most one real
+// narration line (buildLine); a part with no real data is skipped
+// entirely rather than filled with "no data" filler, so a clip still
+// works fine with just its one real part.
 const CLIP_TEMPLATES = [
   {
-    id: "etf-flows",
-    label: "INSTITUTIONAL FLOWS",
-    rotatorSlide: 0,
-    crop: ROTATOR_CROP,
-    zoomCrop: ROTATOR_CROP_ZOOM,
+    id: "money-macro",
+    label: "MONEY & MACRO",
     hookLine: "Something's shifting in institutional money before most people notice —",
-    buildScripts: (signal) => buildFieldNarration(signal.etf_flows, "ETF / institutional flow"),
+    parts: [
+      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 0, buildLine: (signal) => buildPartLine(signal.etf_flows) },
+      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 1, buildLine: (signal) => buildPartLine(signal.system_macro) },
+    ],
   },
   {
-    id: "macro-sentiment",
-    label: "MACRO PULSE",
-    rotatorSlide: 1,
-    crop: ROTATOR_CROP,
-    zoomCrop: ROTATOR_CROP_ZOOM,
-    hookLine: "The macro mood just flipped without much warning —",
-    buildScripts: (signal) => buildFieldNarration(signal.system_macro, "macro"),
-  },
-  {
-    id: "technical-analysis",
-    label: "TECHNICAL READ",
-    rotatorSlide: null,
-    crop: INFO_CROP,
-    zoomCrop: INFO_CROP_ZOOM,
+    id: "chart-narrative",
+    label: "CHART & NARRATIVE",
     hookLine: "The chart's telling a different story than the headlines —",
-    buildScripts: (signal, evidence) => buildTechnicalNarration(evidence),
+    parts: [
+      { crop: INFO_CROP, zoomCrop: INFO_CROP_ZOOM, rotatorSlide: null, buildLine: (signal, evidence) => buildTechnicalPartLine(evidence) },
+      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 2, buildLine: (signal) => buildPartLine(signal.x_narratives) },
+    ],
   },
   {
-    id: "narrative-catalyst",
-    label: "NARRATIVE PULSE",
-    rotatorSlide: 2,
-    crop: ROTATOR_CROP,
-    zoomCrop: ROTATOR_CROP_ZOOM,
-    hookLine: "Here's the story quietly shaping the next move —",
-    buildScripts: (signal) => buildFieldNarration(signal.x_narratives, "narrative"),
-  },
-  {
-    id: "daily-snapshot",
-    label: "SENTIMENT CHECK",
-    rotatorSlide: 3,
-    crop: ROTATOR_CROP,
-    zoomCrop: ROTATOR_CROP_ZOOM,
+    id: "sentiment-verdict",
+    label: "SENTIMENT & VERDICT",
     hookLine: "It's not as simple as bullish or bearish —",
-    buildScripts: (signal) => buildFieldNarration(signal.sentiment, "sentiment"),
-  },
-  {
-    id: "what-matters-now",
-    label: "WHAT MATTERS NOW",
-    rotatorSlide: 4,
-    crop: ROTATOR_CROP,
-    zoomCrop: ROTATOR_CROP_ZOOM,
-    hookLine: "Here's the one thing actually worth watching right now —",
-    buildScripts: (signal, evidence) => buildWhatNowNarration(signal, evidence),
+    parts: [
+      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 3, buildLine: (signal) => buildPartLine(signal.sentiment) },
+      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 4, buildLine: (signal, evidence) => buildVerdictLine(evidence) },
+    ],
   },
 ];
 
+// Resolves a template's real parts for this signal - drops any part with
+// no real data instead of filling it with "no data" filler (see the
+// buildLine functions' null contract), and falls back to a single honest
+// "no data" line only when BOTH parts came back empty.
+function resolveClipParts(template, signal, evidence) {
+  const resolved = template.parts
+    .map((part) => ({ ...part, text: part.buildLine(signal, evidence) }))
+    .filter((part) => part.text);
+  if (resolved.length) return resolved;
+  return [{ crop: INFO_CROP, zoomCrop: INFO_CROP_ZOOM, rotatorSlide: null, text: `No notable data is available for ${template.label.toLowerCase()} in this signal.` }];
+}
+
 // Curiosity-gap opener: a short, fixed, topic-relevant teaser fragment
 // (never a factual claim, so it can't fabricate anything) prefixed onto
-// the first real narration segment - not appended as its own segment, so
-// it costs no extra ElevenLabs API call/credits, just a few more words in
+// the first real narration line - not appended as its own segment, so it
+// costs no extra ElevenLabs API call/credits, just a few more words in
 // segment 0. Ends mid-thought (em dash) so the real payoff lands
 // immediately after, in the same sentence, rather than a clean sentence
 // break. Skipped when there's no real payoff to deliver (the "No notable
 // ... data" fallback line) - a curiosity gap needs a real answer coming.
-function applyHookLine(template, scripts) {
-  if (!scripts.length || scripts[0].startsWith("No notable")) return scripts;
-  return [`${template.hookLine} ${scripts[0]}`, ...scripts.slice(1)];
+function applyHookLine(template, parts) {
+  if (!parts.length || parts[0].text.startsWith("No notable")) return parts;
+  return [{ ...parts[0], text: `${template.hookLine} ${parts[0].text}` }, ...parts.slice(1)];
 }
 
 // Bold hook title for a themed clip's first 3 seconds - the template's own
@@ -700,20 +663,27 @@ async function openCapturePage() {
 // duration now, not a fixed offset), same mechanism as before.
 async function captureFramesForKeyframes(page, frameDir, keyframes) {
   const durationS = keyframes[keyframes.length - 1].end;
-  // Every beat in a themed clip shares one rotatorSlide (see buildKeyframes),
-  // which may not be the page's default (slide 0) - unlike the old 4-beat
-  // arc, this always needs a cue at t=0 too, not just for later beats.
-  // Calling __mktRotatorGoTo repeatedly with the same slide is harmless.
-  const pendingRotatorCues = keyframes
-    .filter((k) => k.rotatorSlide !== null)
-    .map((k) => ({ atSecond: k.start, slide: k.rotatorSlide }));
-
   const totalFrames = Math.round(durationS * CLIP_FPS);
+  // index.html's own rotator keeps auto-advancing on its independent
+  // 10s setInterval the whole time this page is open (see
+  // ROTATION_INTERVAL_MS) - it doesn't know or care that we're forcing a
+  // specific slide for capture. A one-time cue per beat boundary (the
+  // original approach) could get silently clobbered by that timer firing
+  // moments later, and by real wall-clock time this function starts
+  // (page load + up to ~8s waiting for candle data + narration attempts),
+  // the auto-rotation is often already close to its own 10s mark -
+  // confirmed locally: a real render showed the SAME slide for an entire
+  // 2-beat clip because the forced slide-0 cue lost a race with the
+  // timer. Reasserting the current beat's real rotatorSlide on every
+  // captured frame (cheap - showRotatorSlide is a synchronous hidden-
+  // attribute toggle, no fade/async work) makes any such override
+  // self-correct within one frame instead of persisting for the rest of
+  // the clip.
   for (let i = 0; i < totalFrames; i++) {
     const elapsedS = i / CLIP_FPS;
-    while (pendingRotatorCues.length && elapsedS >= pendingRotatorCues[0].atSecond) {
-      const cue = pendingRotatorCues.shift();
-      await page.evaluate((slide) => window.__mktRotatorGoTo?.(slide), cue.slide);
+    const beat = keyframes.find((k) => elapsedS >= k.start && elapsedS < k.end) ?? keyframes[keyframes.length - 1];
+    if (beat.rotatorSlide !== null) {
+      await page.evaluate((slide) => window.__mktRotatorGoTo?.(slide), beat.rotatorSlide);
     }
     const frameNum = String(i).padStart(5, "0");
     await page.screenshot({ path: path.join(frameDir, `frame_${frameNum}.jpg`), type: "jpeg", quality: 85 });
@@ -788,17 +758,16 @@ function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, h
 // this process only ever runs one generateAndUploadClip at a time by design.
 let clipGenerationInFlight = false;
 
-// Generates up to 6 focused, single-topic short clips from the given
-// normalized Grok signal (same shape stream_engine.js already writes to
-// grok_data.json) - one per CLIP_TEMPLATES entry (institutional/ETF flow,
-// macro pulse, technical indicators, narrative/catalyst, overall
-// sentiment, what-matters-now) - and uploads each to YouTube as an
-// unlisted Short for manual review. One Chromium/local-HTTP-server pair is
-// opened once and reused across all six clips rather than relaunching per
-// clip. A failure on one template is logged and skipped so it can't
-// take down the others;
-// never throws past this function's own logging either way - a failure
-// here must not take down the caller (the main broadcast pipeline).
+// Generates up to 3 combined short clips from the given normalized Grok
+// signal (same shape stream_engine.js already writes to grok_data.json) -
+// one per CLIP_TEMPLATES entry (money & macro, chart & narrative,
+// sentiment & verdict - each pairing two related real data categories) -
+// and uploads each to YouTube as an unlisted Short for manual review. One
+// Chromium/local-HTTP-server pair is opened once and reused across all
+// three clips rather than relaunching per clip. A failure on one template
+// is logged and skipped so it can't take down the others; never throws
+// past this function's own logging either way - a failure here must not
+// take down the caller (the main broadcast pipeline).
 export async function generateAndUploadClip(signal) {
   if (clipGenerationInFlight) {
     console.log("[CLIPPER] Skipped: a previous clip generation is still in progress");
@@ -838,32 +807,22 @@ export async function generateAndUploadClip(signal) {
         const frameDir = path.join(parentDir, template.id);
         await mkdir(frameDir, { recursive: true });
 
-        // Real per-template signal bullets/technical evidence, close to
-        // verbatim for the flow/macro/narrative/sentiment templates (see
-        // buildFieldNarration's comment on why this differs from the old
-        // zero-numbers narration policy), or real EMA/VWAP/price numbers
-        // for the technical template (buildTechnicalNarration).
-        const scripts = applyHookLine(template, template.buildScripts(signal, evidence));
+        // Each combined clip's real parts for this signal - a part with no
+        // real data is dropped rather than filled with filler (see
+        // resolveClipParts), then the curiosity-gap opener is prefixed
+        // onto the first real line (applyHookLine).
+        const parts = applyHookLine(template, resolveClipParts(template, signal, evidence));
+        const scripts = parts.map((p) => p.text);
         const narrationSegments = await synthesizeNarrationSegments(scripts, frameDir);
 
         let narrationPath = null;
         let keyframes;
         if (narrationSegments) {
-          keyframes = buildKeyframes(
-            narrationSegments.map((s) => s.duration),
-            template.crop,
-            template.zoomCrop,
-            template.rotatorSlide
-          );
+          keyframes = buildKeyframes(narrationSegments.map((s) => s.duration), parts);
           narrationPath = path.join(frameDir, "narration.mp3");
           await concatAudioSegments(narrationSegments, narrationPath);
         } else {
-          keyframes = buildKeyframes(
-            DEFAULT_BEAT_DURATIONS_S.slice(0, scripts.length),
-            template.crop,
-            template.zoomCrop,
-            template.rotatorSlide
-          );
+          keyframes = buildKeyframes(DEFAULT_BEAT_DURATIONS_S.slice(0, scripts.length), parts);
         }
 
         // Real per-beat narration duration now drives how long each beat's
