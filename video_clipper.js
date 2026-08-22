@@ -97,18 +97,19 @@ const INFO_CROP_ZOOM = "w='iw*0.127236':h='ih*0.08372':x='iw*0.005532':y='ih*0.2
 // Fallback timing only - used when narration isn't available/fails
 // entirely (see synthesizeNarrationSegments's all-or-nothing behavior), so
 // a combined clip still has a sensible pace with no real audio driving it.
-// Each clip has exactly 1 beat per real part found (max 2, since each
-// CLIP_TEMPLATES entry combines exactly 2 sub-topics - see below).
-const DEFAULT_BEAT_DURATIONS_S = [3.2, 3.2];
+// Each clip has exactly 1 beat per real part found (max 3, since each
+// CLIP_TEMPLATES entry combines exactly 3 sub-topics - see below).
+const DEFAULT_BEAT_DURATIONS_S = [3.2, 3.2, 3.2];
 
-// Every clip should run at least 15s - two short real narration segments
-// (each often just one stripped-down sentence) can otherwise add up to
-// well under that. Rather than forcing longer/more narration (which would
-// mean more ElevenLabs credits per clip, working against the quota fix),
-// any shortfall is added as extra hold time on the LAST beat only - the
-// visual panel just stays on screen a bit longer after narration ends
-// (silence there is filled by renderVideo's existing apad), which reads
-// as a natural pause on the closing beat rather than mid-clip dead air.
+// A FLOOR, not a target to hit exactly and not a ceiling to truncate
+// down to - real narration should run however long it actually takes to
+// narrate and analyze the real content (buildPartLine/buildTechnicalPart
+// Line/buildVerdictLine have no total-duration cap of their own, only a
+// per-line length cap - see SPEECH_MAX_CHARS). This only ever pads UP
+// when real content came out short, added as extra hold time on the LAST
+// beat only (silence there is filled by renderVideo's existing apad) -
+// a natural pause on the closing beat, not mid-clip dead air. A clip
+// with substantial real analysis can and should run past 15s on its own.
 const MIN_CLIP_DURATION_S = 15;
 function applyMinClipDuration(beatDurations) {
   const total = beatDurations.reduce((sum, d) => sum + d, 0);
@@ -166,13 +167,12 @@ function deriveColor(text) {
   return "#FFFFFF";
 }
 
-// Three combined clips instead of six single-topic ones - each pairs two
-// related real data categories into one 2-beat clip (cuts from one real
-// panel to the other mid-clip), covering the same six data sources with
-// half the uploads/render passes and half the ElevenLabs TTS calls per
-// signal. rotatorSlide indices match index.html's own rotator order
-// (etf=0, macro=1, narrative=2, sentiment=3, whatnow=4); technical has no
-// rotator slide of its own - it's the TREND/VOLUME/EMA/VWAP info panel.
+// Two combined clips, each covering 3 related real data categories in one
+// 3-beat clip (cuts from one real panel to the next mid-clip) - matches
+// the blueprint clip's own density. rotatorSlide indices match
+// index.html's own rotator order (etf=0, macro=1, narrative=2,
+// sentiment=3, whatnow=4); technical has no rotator slide of its own -
+// it's the TREND/VOLUME/EMA/VWAP info panel.
 const HOOK_MAX_CHARS = 24;
 function truncateForHook(text) {
   const upper = text.toUpperCase();
@@ -185,10 +185,11 @@ function truncateForHook(text) {
 
 // Narration-length truncation (not the on-screen hook's tight 24-char cap) -
 // word-boundary safe, generous enough that ElevenLabs still reads a full,
-// natural clause rather than a fragment. Sized for up to 2 joined real
-// bullets (buildPartLine) plus the curiosity-gap hook line prefixed onto
-// segment 0.
-const SPEECH_MAX_CHARS = 360;
+// natural clause rather than a fragment - not a target length, just a
+// backstop against an unreasonably long single line. Sized for up to 3
+// joined real bullets (buildPartLine) plus the curiosity-gap hook line or
+// seamless-loop closer prefixed/appended onto segment 0/last.
+const SPEECH_MAX_CHARS = 480;
 function truncateForSpeech(text) {
   if (text.length <= SPEECH_MAX_CHARS) return text;
   const cut = text.slice(0, SPEECH_MAX_CHARS);
@@ -243,7 +244,7 @@ function buildPartLine(items) {
   const real = Array.isArray(items) ? items.filter((s) => typeof s === "string" && s.trim()) : [];
   if (!real.length) return null;
   const cleaned = real
-    .slice(0, 2)
+    .slice(0, 3)
     .map((raw) => {
       const idx = raw.indexOf(":");
       return stripNumbers((idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim());
@@ -294,39 +295,34 @@ function buildVerdictLine(evidence) {
   return `Overall bias reads ${truncateForSpeech(bias.value)}.`;
 }
 
-// Three combined clips, each pairing two real data categories that tell
-// one coherent story, rather than six single-topic ones - see the comment
-// above HOOK_MAX_CHARS for why. Each part contributes at most one real
-// narration line (buildLine); a part with no real data is skipped
-// entirely rather than filled with "no data" filler, so a clip still
-// works fine with just its one real part.
+// Two combined clips (each covering 3 real data categories) instead of
+// three 2-part ones - matches the blueprint clip's own density (it cycled
+// through 3 real panels - macro, technical, what-matters-now - in one
+// continuous short). "The data side" (money moving + macro backdrop +
+// technical chart reading) vs "the story side" (narrative + sentiment +
+// bottom-line verdict). Each part contributes at most one real narration
+// line (buildLine); a part with no real data is skipped entirely rather
+// than filled with "no data" filler, so a clip still works fine with
+// fewer real parts.
 const CLIP_TEMPLATES = [
   {
-    id: "money-macro",
-    label: "MONEY & MACRO",
+    id: "money-macro-chart",
+    label: "MONEY, MACRO & CHART",
     hookLine: "Something's shifting in institutional money before most people notice —",
-    loopLine: "And that shift is exactly why something's worth watching here.",
+    loopLine: "And that shift is exactly why the chart's worth watching here.",
     parts: [
       { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 0, buildLine: (signal) => buildPartLine(signal.etf_flows) },
       { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 1, buildLine: (signal) => buildPartLine(signal.system_macro) },
-    ],
-  },
-  {
-    id: "chart-narrative",
-    label: "CHART & NARRATIVE",
-    hookLine: "The chart's telling a different story than the headlines —",
-    loopLine: "Which is exactly the story the chart keeps telling.",
-    parts: [
       { crop: INFO_CROP, zoomCrop: INFO_CROP_ZOOM, rotatorSlide: null, buildLine: (signal, evidence) => buildTechnicalPartLine(evidence) },
-      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 2, buildLine: (signal) => buildPartLine(signal.x_narratives) },
     ],
   },
   {
-    id: "sentiment-verdict",
-    label: "SENTIMENT & VERDICT",
+    id: "narrative-sentiment-verdict",
+    label: "NARRATIVE, SENTIMENT & VERDICT",
     hookLine: "It's not as simple as bullish or bearish —",
     loopLine: "Proving once again it's rarely that simple.",
     parts: [
+      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 2, buildLine: (signal) => buildPartLine(signal.x_narratives) },
       { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 3, buildLine: (signal) => buildPartLine(signal.sentiment) },
       { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 4, buildLine: (signal, evidence) => buildVerdictLine(evidence) },
     ],
@@ -826,16 +822,16 @@ function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, h
 // this process only ever runs one generateAndUploadClip at a time by design.
 let clipGenerationInFlight = false;
 
-// Generates up to 3 combined short clips from the given normalized Grok
+// Generates up to 2 combined short clips from the given normalized Grok
 // signal (same shape stream_engine.js already writes to grok_data.json) -
-// one per CLIP_TEMPLATES entry (money & macro, chart & narrative,
-// sentiment & verdict - each pairing two related real data categories) -
-// and uploads each to YouTube as an unlisted Short for manual review. One
-// Chromium/local-HTTP-server pair is opened once and reused across all
-// three clips rather than relaunching per clip. A failure on one template
-// is logged and skipped so it can't take down the others; never throws
-// past this function's own logging either way - a failure here must not
-// take down the caller (the main broadcast pipeline).
+// one per CLIP_TEMPLATES entry (money/macro/chart, narrative/sentiment/
+// verdict - each covering 3 related real data categories) - and uploads
+// each to YouTube as an unlisted Short for manual review. One Chromium/
+// local-HTTP-server pair is opened once and reused across both clips
+// rather than relaunching per clip. A failure on one template is logged
+// and skipped so it can't take down the other; never throws past this
+// function's own logging either way - a failure here must not take down
+// the caller (the main broadcast pipeline).
 export async function generateAndUploadClip(signal) {
   if (clipGenerationInFlight) {
     console.log("[CLIPPER] Skipped: a previous clip generation is still in progress");
