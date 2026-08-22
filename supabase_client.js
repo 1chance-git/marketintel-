@@ -30,13 +30,18 @@ function normalizeArray(value) {
 // the newest real data for all four fields, not just whichever slot
 // happens to be freshest right now.
 export async function fetchLatestGrokSignal() {
-  // A handful of recent rows is enough to find the latest non-empty match
-  // for each slot even across a legacy merged row (which satisfies both).
+  // Enough rows to find each slot's latest non-empty match even if one
+  // slot fires far more often than the other (e.g. a burst of Slot B
+  // inserts between Slot A's real rows) - at the bridge's roughly-daily
+  // cadence, 200 rows covers many months either way. A window that's too
+  // small would silently return [] for a slot whose real recent row just
+  // fell outside it (see the warning below), rather than erroring - so
+  // generous headroom here matters more than query cost.
   const { data, error } = await getClient()
     .from("grok_signals")
     .select("id, timestamp, etf_flows, system_macro, x_narratives, sentiment")
     .order("timestamp", { ascending: false })
-    .limit(20);
+    .limit(200);
 
   if (error) {
     throw new Error(
@@ -64,6 +69,12 @@ export async function fetchLatestGrokSignal() {
   if (!slotA && !slotB) {
     return null;
   }
+  // A slot with no match inside the fetched window is silently treated as
+  // "empty" below (etf_flows/system_macro or x_narratives/sentiment come
+  // back []) - that's indistinguishable from a real day with no data for
+  // that slot unless it's logged here.
+  if (!slotA) console.error(`[SUPABASE] fetchLatestGrokSignal: no Slot A row found in the latest ${rows.length} rows`);
+  if (!slotB) console.error(`[SUPABASE] fetchLatestGrokSignal: no Slot B row found in the latest ${rows.length} rows`);
 
   // id/timestamp identify this merged view for downstream dedup
   // (StreamEngine.hasChanged) - composing them from both slots' own
