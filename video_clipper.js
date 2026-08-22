@@ -571,10 +571,9 @@ function buildFilterComplex(keyframes, dateText, hookTitle) {
   // blurred (near-zero local variance) while the sharp foreground content
   // sits centered on top at full detail.
   const branchStages = keyframes.map((k, i) => {
-    const crop = k.crop.replace(/:exact=1$/, "");
     return (
       `[s${i}]trim=start=${k.start}:end=${k.end},setpts=PTS-STARTPTS,` +
-      `crop=${crop}:exact=1,split=2[c${i}fg][c${i}bg];` +
+      `crop=${k.crop}:exact=1,split=2[c${i}fg][c${i}bg];` +
       `[c${i}bg]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,` +
       `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},gblur=sigma=20[c${i}bgblur];` +
       `[c${i}fg]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease[c${i}fgscaled];` +
@@ -616,23 +615,18 @@ function buildFilterComplex(keyframes, dateText, hookTitle) {
 }
 
 // Reads the exact numbers/labels the dashboard itself has already computed
-// and rendered - BTC price/change (market-board ticker), trend (chart
-// header badge), DIRECTION (Market Sentiment's own classifyDirection()
-// output, term-direction-value - present in the DOM even while that
-// rotator slide is hidden, since ROTATION_SLIDES only toggles the `hidden`
-// attribute, never removes the content), and `technical` (real EMA20/
-// EMA50/VWAP/price/trend/volume for the active ticker, via
-// window.__mktChartDebug()'s `technical` field - the same real indicator
-// computation index.html's own chart already runs, just also handed back
-// here instead of only drawn as pixels). This is a direct read of numbers
-// already computed/on screen, not a new computation of our own.
+// and rendered - `technical` (real EMA20/EMA50/VWAP/price/trend/volume for
+// the active ticker, via window.__mktChartDebug()'s `technical` field - the
+// same real indicator computation index.html's own chart already runs,
+// just also handed back here instead of only drawn as pixels) and the
+// "What Matters Now" rows below. This is a direct read of numbers already
+// computed/on screen, not a new computation of our own. (Earlier versions
+// also read the market-board price/change ticker, chart trend/volume
+// badges, and the Direction row directly - dropped once buildTechnicalPart
+// Line/buildVerdictLine took over that job via `technical`/`whatNowRows`
+// and nothing else in the file was reading those fields anymore.)
 async function readOnScreenEvidence(page) {
   return page.evaluate(() => ({
-    btcPrice: document.getElementById("mb-price-BTC")?.textContent?.trim() || null,
-    btcChange: document.getElementById("mb-change-BTC")?.textContent?.trim().replace(/[+%]/g, "") || null,
-    trend: document.getElementById("trend-value")?.textContent?.trim() || null,
-    volume: document.getElementById("volume-value")?.textContent?.trim() || null,
-    direction: document.querySelector(".term-direction-value")?.textContent?.trim() || null,
     technical: window.__mktChartDebug?.()?.technical ?? null,
     // "What Matters Now" rows (TOP NARRATIVE / TOP SIGNAL / OVERALL BIAS) -
     // index.html's own renderWhatNow() already builds these purely from

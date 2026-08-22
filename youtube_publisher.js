@@ -72,6 +72,25 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS)
 let cachedAccessToken = null;
 let cachedAccessTokenExpiry = 0;
 
+// Wraps fetchWithTimeout for every Authorization: Bearer call in this file.
+// getAccessToken() only checks its own cache's expiry timestamp - it can't
+// know if YouTube revoked/invalidated a still-"unexpired" cached token
+// early. Without this, a 401 on any authenticated call just throws and
+// gets logged by startAutoPublish's tick catch-all, but the SAME bad
+// token stays cached and gets reused on the next tick, and the one after
+// that, forever - a process meant to run unattended for weeks would never
+// self-heal from a revoked token. Clearing the cache here means the next
+// tick's getAccessToken() call misses the cache and fetches a genuinely
+// fresh token instead.
+async function fetchAuthed(url, options, timeoutMs) {
+  const res = await fetchWithTimeout(url, options, timeoutMs);
+  if (res.status === 401) {
+    cachedAccessToken = null;
+    cachedAccessTokenExpiry = 0;
+  }
+  return res;
+}
+
 async function getAccessToken({ clientId, clientSecret, refreshToken }) {
   if (cachedAccessToken && Date.now() < cachedAccessTokenExpiry - 30_000) {
     return cachedAccessToken;
@@ -103,7 +122,7 @@ async function listMyBroadcasts(accessToken) {
   // verified against production) - mine=true alone returns broadcasts across
   // all lifecycle states, which is filtered client-side below anyway.
   const url = `${API_BASE}/liveBroadcasts?part=id,status,contentDetails&mine=true&maxResults=25`;
-  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const res = await fetchAuthed(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
     throw new Error(`liveBroadcasts.list failed: ${res.status} ${await res.text()}`);
   }
@@ -113,7 +132,7 @@ async function listMyBroadcasts(accessToken) {
 
 async function transitionBroadcast(accessToken, broadcastId, targetStatus) {
   const url = `${API_BASE}/liveBroadcasts/transition?broadcastStatus=${targetStatus}&id=${encodeURIComponent(broadcastId)}&part=id,status`;
-  const res = await fetchWithTimeout(url, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } });
+  const res = await fetchAuthed(url, { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
     throw new Error(`liveBroadcasts.transition(${targetStatus}) failed: ${res.status} ${await res.text()}`);
   }
@@ -125,7 +144,7 @@ async function transitionBroadcast(accessToken, broadcastId, targetStatus) {
 // creating a new broadcast here never requires touching that env var).
 async function findExistingStreamId(accessToken) {
   const url = `${API_BASE}/liveStreams?part=id&mine=true&maxResults=1`;
-  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const res = await fetchAuthed(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) {
     throw new Error(`liveStreams.list failed: ${res.status} ${await res.text()}`);
   }
@@ -144,7 +163,7 @@ async function findExistingStreamId(accessToken) {
 // ready -> live directly, no testing hop needed, and no auto-start racing
 // against us.
 async function createFreshBroadcast(accessToken, streamId) {
-  const insertRes = await fetchWithTimeout(`${API_BASE}/liveBroadcasts?part=snippet,status,contentDetails`, {
+  const insertRes = await fetchAuthed(`${API_BASE}/liveBroadcasts?part=snippet,status,contentDetails`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -167,7 +186,7 @@ async function createFreshBroadcast(accessToken, streamId) {
   }
   const broadcast = await insertRes.json();
 
-  const bindRes = await fetchWithTimeout(`${API_BASE}/liveBroadcasts/bind?id=${encodeURIComponent(broadcast.id)}&streamId=${encodeURIComponent(streamId)}&part=id,contentDetails`, {
+  const bindRes = await fetchAuthed(`${API_BASE}/liveBroadcasts/bind?id=${encodeURIComponent(broadcast.id)}&streamId=${encodeURIComponent(streamId)}&part=id,contentDetails`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -182,7 +201,7 @@ async function createFreshBroadcast(accessToken, streamId) {
     // but never allowed to replace/mask the original bind error below - the
     // bind failure is the one callers need to see and react to.
     try {
-      const deleteRes = await fetchWithTimeout(`${API_BASE}/liveBroadcasts?id=${encodeURIComponent(broadcast.id)}`, {
+      const deleteRes = await fetchAuthed(`${API_BASE}/liveBroadcasts?id=${encodeURIComponent(broadcast.id)}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${accessToken}` },
       });
@@ -324,7 +343,7 @@ export async function uploadShort(videoBuffer, { signal, overlayText }) {
   const closing = `\r\n--${boundary}--`;
   const body = Buffer.concat([Buffer.from(metadataPart), Buffer.from(videoPartHeader), videoBuffer, Buffer.from(closing)]);
 
-  const res = await fetchWithTimeout(`${UPLOAD_API_BASE}/videos?uploadType=multipart&part=snippet,status`, {
+  const res = await fetchAuthed(`${UPLOAD_API_BASE}/videos?uploadType=multipart&part=snippet,status`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary=${boundary}` },
     body,
