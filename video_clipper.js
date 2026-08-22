@@ -81,19 +81,6 @@ const ROTATOR_CROP = "w='iw*0.32':h='ih*0.50':x='iw*0.68':y='ih*0.117'";
 // converted to iw*/ih* fractions.
 const INFO_CROP = "w='iw*0.1383':h='ih*0.091':x=0:y='ih*0.2007'";
 
-// A ~8% tighter, re-centered version of the same real crop region -
-// alternated in every other beat (see buildKeyframes) as a cheap "pattern
-// interrupt": the visual framing punches in slightly on a beat change so
-// the shot isn't perfectly static for the whole clip, without any new
-// capture/timing machinery (same DOM pixels, same evidence, just a
-// different centered crop of them) and without reopening the per-beat
-// caption/sync problems this project already tried and reverted twice.
-// Center point is preserved algebraically from ROTATOR_CROP/INFO_CROP's
-// own real x/y/w/h (new_w = w*0.92, new_x = x + w*0.04, etc.) - not a
-// separately eyeballed region.
-const ROTATOR_CROP_ZOOM = "w='iw*0.2944':h='ih*0.46':x='iw*0.6928':y='ih*0.137'";
-const INFO_CROP_ZOOM = "w='iw*0.127236':h='ih*0.08372':x='iw*0.005532':y='ih*0.20434'";
-
 // Fallback timing only - used when narration isn't available/fails
 // entirely (see synthesizeNarrationSegments's all-or-nothing behavior), so
 // a combined clip still has a sensible pace with no real audio driving it.
@@ -122,17 +109,18 @@ function applyMinClipDuration(beatDurations) {
 // Builds the KEYFRAMES array for one clip from real per-beat narration
 // durations (or the DEFAULT_BEAT_DURATIONS_S fallback) and each beat's own
 // crop/rotator-slide (beatMeta, one entry per part - see CLIP_TEMPLATES).
-// Unlike a single shared crop for the whole clip, each combined clip cuts
-// to a genuinely different real panel between its two sub-topics - that
-// topic change is itself the pattern interrupt, plus each beat uses its
-// part's punched-in zoom variant for a touch of extra movement.
+// Each beat holds a fully static crop for its whole duration - a punched-
+// in zoom variant was tried on alternating beats as a "pattern interrupt"
+// but real feedback asked for a static hold on whatever's being narrated
+// instead, so each combined clip's only visual movement is the hard cut
+// between its real sub-topics.
 function buildKeyframes(beatDurations, beatMeta) {
   let t = 0;
   return beatDurations.map((duration, i) => {
     const start = t;
     t += duration;
     const meta = beatMeta[i] ?? beatMeta[beatMeta.length - 1];
-    return { start, end: t, crop: i % 2 === 0 ? meta.crop : meta.zoomCrop, rotatorSlide: meta.rotatorSlide };
+    return { start, end: t, crop: meta.crop, rotatorSlide: meta.rotatorSlide };
   });
 }
 
@@ -306,9 +294,9 @@ const CLIP_TEMPLATES = [
     hookLine: "Something's shifting in institutional money before most people notice —",
     loopLine: "And that shift is exactly why the chart's worth watching here.",
     parts: [
-      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 0, buildLine: (signal) => buildPartLine(signal.etf_flows) },
-      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 1, buildLine: (signal) => buildPartLine(signal.system_macro) },
-      { crop: INFO_CROP, zoomCrop: INFO_CROP_ZOOM, rotatorSlide: null, buildLine: (signal, evidence) => buildTechnicalPartLine(evidence) },
+      { crop: ROTATOR_CROP, rotatorSlide: 0, buildLine: (signal) => buildPartLine(signal.etf_flows) },
+      { crop: ROTATOR_CROP, rotatorSlide: 1, buildLine: (signal) => buildPartLine(signal.system_macro) },
+      { crop: INFO_CROP, rotatorSlide: null, buildLine: (signal, evidence) => buildTechnicalPartLine(evidence) },
     ],
   },
   {
@@ -317,9 +305,9 @@ const CLIP_TEMPLATES = [
     hookLine: "It's not as simple as bullish or bearish —",
     loopLine: "Proving once again it's rarely that simple.",
     parts: [
-      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 2, buildLine: (signal) => buildPartLine(signal.x_narratives) },
-      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 3, buildLine: (signal) => buildPartLine(signal.sentiment) },
-      { crop: ROTATOR_CROP, zoomCrop: ROTATOR_CROP_ZOOM, rotatorSlide: 4, buildLine: (signal, evidence) => buildVerdictLine(evidence) },
+      { crop: ROTATOR_CROP, rotatorSlide: 2, buildLine: (signal) => buildPartLine(signal.x_narratives) },
+      { crop: ROTATOR_CROP, rotatorSlide: 3, buildLine: (signal) => buildPartLine(signal.sentiment) },
+      { crop: ROTATOR_CROP, rotatorSlide: 4, buildLine: (signal, evidence) => buildVerdictLine(evidence) },
     ],
   },
 ];
@@ -333,7 +321,7 @@ function resolveClipParts(template, signal, evidence) {
     .map((part) => ({ ...part, text: part.buildLine(signal, evidence) }))
     .filter((part) => part.text);
   if (resolved.length) return resolved;
-  return [{ crop: INFO_CROP, zoomCrop: INFO_CROP_ZOOM, rotatorSlide: null, text: `No notable data is available for ${template.label.toLowerCase()} in this signal.` }];
+  return [{ crop: INFO_CROP, rotatorSlide: null, text: `No notable data is available for ${template.label.toLowerCase()} in this signal.` }];
 }
 
 // Curiosity-gap opener: a short, fixed, topic-relevant teaser fragment
@@ -865,6 +853,19 @@ export async function generateAndUploadClip(signal) {
       try {
         const frameDir = path.join(parentDir, template.id);
         await mkdir(frameDir, { recursive: true });
+
+        // Real production bug: narration said "trend reading neutral"
+        // while the captured frame showed the BEARISH badge. evidence.
+        // technical was read ONCE in openCapturePage(), before any TTS
+        // synthesis or frame capture for earlier templates in this same
+        // loop - by the time a later template (e.g. chart-narrative,
+        // which might be the 2nd of 2 clips) actually narrates/captures
+        // it, real price/EMA movement can have already flipped the real
+        // trend, so the stale snapshot and the freshly-captured frame
+        // disagree. Re-reading it fresh right before each template's own
+        // narration/capture keeps the gap to just that template's own
+        // capture duration instead of the whole pipeline's elapsed time.
+        evidence.technical = await page.evaluate(() => window.__mktChartDebug?.()?.technical ?? null);
 
         // Each combined clip's real parts for this signal - a part with no
         // real data is dropped rather than filled with filler (see
