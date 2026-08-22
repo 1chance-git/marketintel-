@@ -97,9 +97,10 @@ const INFO_CROP_ZOOM = "w='iw*0.127236':h='ih*0.08372':x='iw*0.005532':y='ih*0.2
 // Fallback timing only - used when narration isn't available/fails
 // entirely (see synthesizeNarrationSegments's all-or-nothing behavior), so
 // a themed clip still has a sensible pace with no real audio driving it.
-// Each themed clip has 1-3 beats (one per real bullet found, see
-// buildFieldNarration) rather than a fixed 4, so this is sized for the max.
-const DEFAULT_BEAT_DURATIONS_S = [3.2, 3.2, 3.2];
+// Each themed clip has 1-2 beats (one per real bullet found, capped by
+// MAX_NARRATION_SEGMENTS below) rather than a fixed 4, so this is sized
+// for that max - keep in sync if MAX_NARRATION_SEGMENTS ever changes.
+const DEFAULT_BEAT_DURATIONS_S = [3.2, 3.2];
 
 // Builds the KEYFRAMES array for one themed clip from real per-beat
 // narration durations (or the DEFAULT_BEAT_DURATIONS_S fallback). Every
@@ -204,12 +205,19 @@ function stripNumbers(text) {
 // is real EMA/VWAP/price numbers, so stripping there would leave it
 // saying almost nothing; this only covers the clips that read raw Grok
 // signal text.
+// Capped at 2 bullets/segments per clip (was 3) across every template -
+// each segment is its own ElevenLabs TTS call, and generating 6 clips per
+// signal instead of 1 multiplies real credit usage; this is the cheapest
+// lever to fit the existing ElevenLabs quota without dropping a clip
+// entirely (see MAX_NARRATION_SEGMENTS' other use sites).
+const MAX_NARRATION_SEGMENTS = 2;
+
 function buildFieldNarration(items, categoryLabel) {
   const real = Array.isArray(items) ? items.filter((s) => typeof s === "string" && s.trim()) : [];
   if (!real.length) {
     return [`No notable ${categoryLabel} data is available in this signal.`];
   }
-  return real.slice(0, 3).map((raw) => {
+  return real.slice(0, MAX_NARRATION_SEGMENTS).map((raw) => {
     const idx = raw.indexOf(":");
     const cleaned = (idx !== -1 && idx <= 40) ? raw.slice(idx + 1).trim() : raw.trim();
     return truncateForSpeech(stripNumbers(cleaned));
@@ -246,7 +254,7 @@ function buildTechnicalNarration(evidence) {
   if (t.volume && t.volume !== "—") {
     segments.push(`Volume is currently reading ${t.volume.toLowerCase()}.`);
   }
-  return segments;
+  return segments.slice(0, MAX_NARRATION_SEGMENTS);
 }
 
 // "What Matters Now" narration - one sentence per real row already shown
@@ -264,7 +272,7 @@ function buildWhatNowNarration(signal, evidence) {
   // TOP NARRATIVE/TOP SIGNAL are raw signal text (same numbers-off rule as
   // buildFieldNarration); OVERALL BIAS is already a non-numeric label
   // (RISK-ON/RISK-OFF/MIXED) so stripNumbers is a no-op there.
-  return rows.map((row) => `${row.label}: ${truncateForSpeech(stripNumbers(row.value))}.`);
+  return rows.slice(0, MAX_NARRATION_SEGMENTS).map((row) => `${row.label}: ${truncateForSpeech(stripNumbers(row.value))}.`);
 }
 
 const CLIP_TEMPLATES = [
@@ -274,6 +282,7 @@ const CLIP_TEMPLATES = [
     rotatorSlide: 0,
     crop: ROTATOR_CROP,
     zoomCrop: ROTATOR_CROP_ZOOM,
+    hookLine: "Something's shifting in institutional money before most people notice —",
     buildScripts: (signal) => buildFieldNarration(signal.etf_flows, "ETF / institutional flow"),
   },
   {
@@ -282,6 +291,7 @@ const CLIP_TEMPLATES = [
     rotatorSlide: 1,
     crop: ROTATOR_CROP,
     zoomCrop: ROTATOR_CROP_ZOOM,
+    hookLine: "The macro mood just flipped without much warning —",
     buildScripts: (signal) => buildFieldNarration(signal.system_macro, "macro"),
   },
   {
@@ -290,6 +300,7 @@ const CLIP_TEMPLATES = [
     rotatorSlide: null,
     crop: INFO_CROP,
     zoomCrop: INFO_CROP_ZOOM,
+    hookLine: "The chart's telling a different story than the headlines —",
     buildScripts: (signal, evidence) => buildTechnicalNarration(evidence),
   },
   {
@@ -298,6 +309,7 @@ const CLIP_TEMPLATES = [
     rotatorSlide: 2,
     crop: ROTATOR_CROP,
     zoomCrop: ROTATOR_CROP_ZOOM,
+    hookLine: "Here's the story quietly shaping the next move —",
     buildScripts: (signal) => buildFieldNarration(signal.x_narratives, "narrative"),
   },
   {
@@ -306,6 +318,7 @@ const CLIP_TEMPLATES = [
     rotatorSlide: 3,
     crop: ROTATOR_CROP,
     zoomCrop: ROTATOR_CROP_ZOOM,
+    hookLine: "It's not as simple as bullish or bearish —",
     buildScripts: (signal) => buildFieldNarration(signal.sentiment, "sentiment"),
   },
   {
@@ -314,9 +327,23 @@ const CLIP_TEMPLATES = [
     rotatorSlide: 4,
     crop: ROTATOR_CROP,
     zoomCrop: ROTATOR_CROP_ZOOM,
+    hookLine: "Here's the one thing actually worth watching right now —",
     buildScripts: (signal, evidence) => buildWhatNowNarration(signal, evidence),
   },
 ];
+
+// Curiosity-gap opener: a short, fixed, topic-relevant teaser fragment
+// (never a factual claim, so it can't fabricate anything) prefixed onto
+// the first real narration segment - not appended as its own segment, so
+// it costs no extra ElevenLabs API call/credits, just a few more words in
+// segment 0. Ends mid-thought (em dash) so the real payoff lands
+// immediately after, in the same sentence, rather than a clean sentence
+// break. Skipped when there's no real payoff to deliver (the "No notable
+// ... data" fallback line) - a curiosity gap needs a real answer coming.
+function applyHookLine(template, scripts) {
+  if (!scripts.length || scripts[0].startsWith("No notable")) return scripts;
+  return [`${template.hookLine} ${scripts[0]}`, ...scripts.slice(1)];
+}
 
 // Bold hook title for a themed clip's first 3 seconds - the template's own
 // fixed label (a real category name, not fabricated data) colored by the
@@ -816,7 +843,7 @@ export async function generateAndUploadClip(signal) {
         // buildFieldNarration's comment on why this differs from the old
         // zero-numbers narration policy), or real EMA/VWAP/price numbers
         // for the technical template (buildTechnicalNarration).
-        const scripts = template.buildScripts(signal, evidence);
+        const scripts = applyHookLine(template, template.buildScripts(signal, evidence));
         const narrationSegments = await synthesizeNarrationSegments(scripts, frameDir);
 
         let narrationPath = null;
