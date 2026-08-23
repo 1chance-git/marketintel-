@@ -612,6 +612,13 @@ function formatClipDate(isoTimestamp) {
 }
 
 function buildFilterComplex(keyframes, dateText, hookTitle) {
+  // Diagnostic-only: two targeted fixes (a minimum-measured-rect guard,
+  // then forcing even pixel dimensions before format=yuv420p) both failed
+  // to resolve a real, repeatedly-reproduced production crash
+  // ("[Parsed_scale_N] Failed to configure output pad") - logging every
+  // beat's actual crop expression here means the next failure can be
+  // matched against a real crop string instead of guessing blind again.
+  console.log(`[CLIPPER] keyframe crops:\n${keyframes.map((k, i) => `  [${i}] rotatorSlide=${k.rotatorSlide} crop=${k.crop}`).join("\n")}`);
   // Per-keyframe branch, not a single time-varying crop: verified locally
   // (real ffmpeg 5.1.9 render, not assumed) that ffmpeg's crop filter only
   // evaluates its OWN OUTPUT w/h once at filter init - x/y can vary per
