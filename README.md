@@ -99,6 +99,10 @@ Environment variables:
 - `YOUTUBE_LIVE_URL` — RTMP ingest URL (with stream key) for YouTube Live.
   When unset, video is written to a local MP4 file instead. This is a
   deployment secret only — it must never be hardcoded or committed.
+- `YOUTUBE_CHANNEL_URL` — optional. The PUBLIC channel/watch page linked
+  from each auto-generated Short's description. Not a secret, but kept
+  separate from `YOUTUBE_LIVE_URL` above since that one embeds the private
+  stream key.
 
 Do not commit secrets. The Supabase key in `supabase_client.js` is an
 anon/read-only key intentionally safe to publish; anything with write access

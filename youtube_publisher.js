@@ -42,6 +42,11 @@
 //   RESEND_FROM_EMAIL  - optional; defaults to Resend's own unverified
 //                        sender address, which works without owning/
 //                        verifying a domain
+//   YOUTUBE_CHANNEL_URL - optional; the PUBLIC channel/watch page linked
+//                        from each upload's description. Deliberately
+//                        separate from stream_engine.js's YOUTUBE_LIVE_URL,
+//                        which is the private RTMP ingest URL and must
+//                        never appear in public-facing text.
 // ---------------------------------------------------------------------------
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -232,28 +237,66 @@ function sanitizeForYoutube(text) {
   return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "").trim();
 }
 
+// YouTube truncates long titles in search/suggested-video surfaces well
+// before its own ~100-char API limit - keeping the real, meaningful part
+// (the scraped trend + asset ticker) inside the first 65 chars means it
+// never gets cut off mid-word on those surfaces.
+const YT_TITLE_MAX_CHARS = 65;
+
+// "[Scraped Trend] Impact on $[AssetTicker] | Terminal Intel" - hook is
+// real signal text (see buildHookTitle in video_clipper.js, which this
+// must match - see the overlayText[0] comment at its call site), never
+// fixed marketing copy. Truncates the TREND portion only when the fixed
+// "Impact on $TICKER | Terminal Intel" suffix would otherwise push the
+// whole title past YT_TITLE_MAX_CHARS, so the ticker/suffix are never the
+// part that gets cut.
+function buildTitle(hook, ticker) {
+  const tickerTag = `$${ticker || "CRYPTO"}`;
+  const suffix = ` Impact on ${tickerTag} | Terminal Intel`;
+  const maxHookLen = Math.max(0, YT_TITLE_MAX_CHARS - suffix.length);
+  const trimmedHook = hook.length > maxHookLen ? hook.slice(0, maxHookLen).trim() : hook;
+  return sanitizeForYoutube(`${trimmedHook}${suffix}`).slice(0, YT_TITLE_MAX_CHARS);
+}
+
 // Builds title/description/tags from the real signal that triggered the
 // clip - never fixed marketing copy. Falls back to a neutral, non-claim
 // default only when a field is genuinely empty, same rule video_clipper.js
 // uses for the on-screen overlay text.
-function buildShortMetadata({ signal, overlayText }) {
+function buildShortMetadata({ signal, overlayText, ticker }) {
   const hook = overlayText?.[0] || "Market Update";
-  const title = sanitizeForYoutube(`${hook} | Live Terminal Intel`).slice(0, 100);
+  const title = buildTitle(hook, ticker);
   const bodyLines = (overlayText || []).slice(0, 3).filter(Boolean).map(sanitizeForYoutube);
+  // Real asset ticker (or the same "CRYPTO" fallback the title uses) plus
+  // the two fixed macro tags - never invented per-clip hashtags, so this
+  // stays a small, predictable, always-present anchor rather than a new
+  // source of fabricated claims.
+  const hashtags = `#${ticker || "CRYPTO"} #MarketIntelligence #CryptoMacro`;
+  // YOUTUBE_CHANNEL_URL is the PUBLIC channel/watch page - deliberately a
+  // separate env var from stream_engine.js's YOUTUBE_LIVE_URL, which is
+  // the private RTMP ingest URL (embeds the stream key) and must never be
+  // exposed in public-facing text. Omitted entirely (no blank line) when
+  // not configured, same "no fabricated placeholder" rule as everywhere
+  // else in this function.
+  const channelUrl = process.env.YOUTUBE_CHANNEL_URL || null;
   const description = sanitizeForYoutube(
     [
       ...bodyLines,
       "",
+      hashtags,
+      channelUrl ? `Watch the live stream: ${channelUrl}` : null,
       `Signal timestamp: ${signal?.timestamp || "unknown"}`,
       "Live terminal intel - not financial advice.",
-    ].join("\n")
+    ].filter((line) => line !== null).join("\n")
   ).slice(0, 4800);
   return {
     snippet: {
       title,
       description,
       tags: ["CryptoMarkets", "MarketIntelligence", "LiveTerminal"],
-      categoryId: "28", // Science & Technology
+      // Locked to Science & Technology - this pipeline only ever produces
+      // one kind of content, so categoryId is a fixed constant, never
+      // derived from signal data.
+      categoryId: "28",
     },
     status: { privacyStatus: "unlisted", selfDeclaredMadeForKids: false },
   };
@@ -325,7 +368,7 @@ async function sendReviewNotification({ title, watchUrl }) {
 // video bytes) - the web-form-style multipart/form-data that fetch's
 // built-in FormData produces is not accepted by this endpoint, so the
 // body is built manually.
-export async function uploadShort(videoBuffer, { signal, overlayText }) {
+export async function uploadShort(videoBuffer, { signal, overlayText, ticker }) {
   const clientId = process.env.YOUTUBE_OAUTH_CLIENT_ID || null;
   const clientSecret = process.env.YOUTUBE_OAUTH_CLIENT_SECRET || null;
   const refreshToken = process.env.YOUTUBE_OAUTH_REFRESH_TOKEN || null;
@@ -334,7 +377,7 @@ export async function uploadShort(videoBuffer, { signal, overlayText }) {
   }
 
   const accessToken = await getAccessToken({ clientId, clientSecret, refreshToken });
-  const metadata = buildShortMetadata({ signal, overlayText });
+  const metadata = buildShortMetadata({ signal, overlayText, ticker });
 
   // The real bug behind two rounds of production failures here wasn't the
   // multipart body at all - it was the URL. Google's media-upload

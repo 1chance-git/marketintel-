@@ -209,11 +209,18 @@ function classifySentiment(text) {
   return "neutral";
 }
 
+// Sentiment color engine: one strict accent per classifySentiment() result,
+// reused everywhere on-screen color needs to track real data sentiment
+// (currently the hook title's fontcolor) rather than picking a fixed
+// per-panel color. Values match the exact codes requested for the
+// bullish/bearish cases; neutral stays white since no keyword dominated.
+const SENTIMENT_ACCENT = {
+  bullish: "#00E676",
+  bearish: "#FF1744",
+  neutral: "#FFFFFF",
+};
 function deriveColor(text) {
-  const sentiment = classifySentiment(text);
-  if (sentiment === "bullish") return "#00FF00";
-  if (sentiment === "bearish") return "#FF4444";
-  return "#FFFFFF";
+  return SENTIMENT_ACCENT[classifySentiment(text)];
 }
 
 // On-screen hook title cap (fontsize 64, first 3 seconds only - see
@@ -433,12 +440,32 @@ function buildAnalystNarrationSegments(signal, evidence) {
 // beat came back as its own no-data fallback text, colored by the real
 // sentiment of what that beat actually says.
 const ARC_FALLBACK_MARKERS = ["no notable ETF flow data available", "no notable narrative shift reported"];
+
+// Alternating Layouts: 3 subtle hook-title positioning profiles, picked at
+// random once per clip (not per frame) so consecutive renders of similar
+// signal text don't share an identical static frame - the "Template Trap"
+// YouTube's repetitive-content detection targets is about the pixel
+// layout looking identical clip after clip, not just the words changing.
+// x/y are the same drawtext expressions buildFilterComplex already used
+// (w/h/text_w/text_h are drawtext's own built-in expression variables),
+// just parameterized instead of hardcoded to one fixed position.
+const HOOK_LAYOUT_PROFILES = [
+  { name: "top-center", x: "(w-text_w)/2", y: "140" },
+  { name: "top-left", x: "60", y: "160" },
+  { name: "bottom-band", x: "(w-text_w)/2", y: "h-320" },
+];
+function pickLayoutProfile() {
+  return HOOK_LAYOUT_PROFILES[Math.floor(Math.random() * HOOK_LAYOUT_PROFILES.length)];
+}
+
 function buildHookTitle(scripts) {
   const [etfSegment, , narrativeSegment] = scripts;
   const candidates = [narrativeSegment, etfSegment];
   const real = candidates.find((s) => s && !ARC_FALLBACK_MARKERS.some((marker) => s.includes(marker)));
-  if (real) return { text: truncateForHook(real), color: deriveColor(real) };
-  return { text: "MARKET INTELLIGENCE NETWORK".slice(0, HOOK_MAX_CHARS), color: "#FFFFFF" };
+  const layout = pickLayoutProfile();
+  console.log(`[CLIPPER] hook layout profile: ${layout.name}`);
+  if (real) return { text: truncateForHook(real), color: deriveColor(real), layout };
+  return { text: "MARKET INTELLIGENCE NETWORK".slice(0, HOOK_MAX_CHARS), color: "#FFFFFF", layout };
 }
 
 const ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech";
@@ -611,6 +638,25 @@ function formatClipDate(isoTimestamp) {
   return `${datePart.toUpperCase()} · ${timePart}`;
 }
 
+// Dynamic Asset Crops: nudges only a crop's x/y OFFSET (never its w/h, so
+// the framing measured/documented on ROTATOR_CROP/INFO_CROP/rectToCropFilter
+// above never changes size or clips new content) by a random 2-5% of that
+// crop's own width/height. ffmpeg's crop filter exposes ow/oh (its own
+// configured output width/height) in x/y expressions, so min(iw-ow,...)/
+// min(ih-oh,...) clamp the jittered offset to the source frame's edges
+// regardless of crop size - this can never push a crop out of bounds, only
+// shift where within its existing padding margin it sits. Applied once per
+// keyframe per render (JS-side Math.random(), baked into the expression
+// string before ffmpeg ever runs), so every clip's background pixels
+// differ slightly even when two signals produce the identical crop
+// fraction, without changing what content is actually visible.
+function jitterCropExpr(cropStr) {
+  const pct = () => (0.02 + Math.random() * 0.03) * (Math.random() < 0.5 ? -1 : 1);
+  return cropStr
+    .replace(/x='iw\*([\d.]+)'/, (_, v) => `x='max(0,min(iw-ow,iw*${v}+ow*(${pct().toFixed(4)})))'`)
+    .replace(/y='ih\*([\d.]+)'/, (_, v) => `y='max(0,min(ih-oh,ih*${v}+oh*(${pct().toFixed(4)})))'`);
+}
+
 function buildFilterComplex(keyframes, dateText, hookTitle) {
   // Diagnostic-only: two targeted fixes (a minimum-measured-rect guard,
   // then forcing even pixel dimensions before format=yuv420p) both failed
@@ -672,7 +718,7 @@ function buildFilterComplex(keyframes, dateText, hookTitle) {
       // format=yuv420p ever sees it - cheap (at most a 1px trim) and
       // unconditionally safe for every crop source, not just the dynamic
       // ones.
-      `crop=${k.crop}:exact=1,scale=trunc(iw/2)*2:trunc(ih/2)*2,` +
+      `crop=${jitterCropExpr(k.crop)}:exact=1,scale=trunc(iw/2)*2:trunc(ih/2)*2,` +
       // format=yuv420p right after crop/even-round, before any scale: the
       // mjpeg source frames decode as yuvj420p (JPEG/"full range"), which
       // swscale treats as ambiguous at every later scale/overlay op in
@@ -709,11 +755,12 @@ function buildFilterComplex(keyframes, dateText, hookTitle) {
   // twice. box=1 draws an opaque black backing behind the text so it stays
   // legible regardless of what's under it (bright chart lines, light UI
   // panels, etc.), on top of the usual white-fill/black-border combo.
+  const hookLayout = hookTitle?.layout ?? HOOK_LAYOUT_PROFILES[0];
   const hookStage = hookTitle
     ? `[vconcat0]drawtext=fontfile=${FONT_PATH}:text='${escapeDrawtext(hookTitle.text)}':expansion=none:` +
       `fontcolor=${hookTitle.color}:fontsize=64:borderw=4:bordercolor=black:` +
       `box=1:boxcolor=black@0.55:boxborderw=20:` +
-      `x=(w-text_w)/2:y=140:enable='lte(t,3)'[vhook0]`
+      `x=${hookLayout.x}:y=${hookLayout.y}:enable='lte(t,3)'[vhook0]`
     : "[vconcat0]copy[vhook0]";
 
   const dateStage = dateText
@@ -1089,7 +1136,13 @@ export async function generateAndUploadClip(signal) {
     // BlackRock..." (scripts[0]) while the video itself opened on "ON THE
     // NARRATIVE..." (hookTitle.text) - title and clip disagreeing about
     // what the clip is even about.
-    const watchUrl = await uploadShort(videoBuffer, { signal, overlayText: [hookTitle.text, ...scripts.slice(1)] });
+    // ticker is the real asset symbol __mktChartDebug's technical field was
+    // already computed for (evidence.technical.ticker) - passed through so
+    // the YouTube title/hashtags can name the actual asset instead of a
+    // generic placeholder; buildShortMetadata falls back to "CRYPTO" only
+    // when no chart data was available at capture time.
+    const ticker = evidence.technical?.ticker || null;
+    const watchUrl = await uploadShort(videoBuffer, { signal, overlayText: [hookTitle.text, ...scripts.slice(1)], ticker });
     console.log(`[REVIEW URL GENERATED] ${watchUrl}`);
 
     await browser.close();
