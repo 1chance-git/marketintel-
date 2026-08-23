@@ -868,6 +868,20 @@ function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, h
       : ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"];
     const args = [
       "-y",
+      // Two real production crashes' actual fatal error ("Error
+      // initializing output stream 0:0... Conversion failed!") got
+      // completely buried under a flood of hundreds of unrelated
+      // "deprecated pixel format used" WARNING-level swscale messages -
+      // large enough to exhaust even a widened tail slice AND apparently
+      // Railway's own log ingestion for that burst, so the real cause was
+      // never actually visible to diagnose against (a format=yuv420p fix
+      // aimed at that warning's likely source did NOT reduce its volume
+      // in production, so its real trigger is still unknown). Dropping
+      // ffmpeg's own log level to errors-only suppresses that warning
+      // spam at the source regardless of what's actually causing it, so
+      // the real fatal error is finally visible on the next failure
+      // instead of being drowned out again.
+      "-hide_banner", "-loglevel", "error",
       "-framerate", String(CLIP_FPS),
       "-i", path.join(frameDir, "frame_%05d.jpg"),
       ...audioInputArgs,
