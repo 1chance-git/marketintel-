@@ -639,7 +639,17 @@ function buildFilterComplex(keyframes, dateText, hookTitle) {
   const branchStages = keyframes.map((k, i) => {
     return (
       `[s${i}]trim=start=${k.start}:end=${k.end},setpts=PTS-STARTPTS,` +
-      `crop=${k.crop}:exact=1,split=2[c${i}fg][c${i}bg];` +
+      // format=yuv420p right after crop, before any scale: the mjpeg
+      // source frames decode as yuvj420p (JPEG/"full range"), which
+      // swscale treats as ambiguous at every later scale/overlay op in
+      // this branch, logging a "deprecated pixel format used, make sure
+      // you did set range correctly" warning per op. Normalizing to a
+      // properly range-tagged yuv420p once, immediately after crop,
+      // removes the ambiguity at its source instead of at every
+      // downstream scale call - confirmed via a real production run that
+      // this warning alone could flood stderr heavily enough to bury the
+      // actual fatal error underneath it in the captured tail.
+      `crop=${k.crop}:exact=1,format=yuv420p,split=2[c${i}fg][c${i}bg];` +
       `[c${i}bg]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,` +
       `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},gblur=sigma=20[c${i}bgblur];` +
       `[c${i}fg]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease[c${i}fgscaled];` +
