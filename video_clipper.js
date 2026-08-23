@@ -81,18 +81,20 @@ const ROTATOR_CROP = "w='iw*0.32':h='ih*0.50':x='iw*0.68':y='ih*0.117'";
 // converted to iw*/ih* fractions.
 const INFO_CROP = "w='iw*0.1383':h='ih*0.091':x=0:y='ih*0.2007'";
 
-// A ~8% tighter, re-centered version of the same real crop region -
+// A 20% tighter, re-centered version of the same real crop region -
 // alternated in every other beat (see buildKeyframes) as a cheap "pattern
-// interrupt": the visual framing punches in slightly on a beat change so
-// the shot isn't perfectly static for the whole clip, without any new
-// capture/timing machinery (same DOM pixels, same evidence, just a
-// different centered crop of them). Removed once on feedback favoring a
-// fully static hold, then re-added on feedback favoring the crops/zooms -
-// center point is preserved algebraically from ROTATOR_CROP/INFO_CROP's
-// own real x/y/w/h (new_w = w*0.92, new_x = x + w*0.04, etc.), not a
-// separately eyeballed region.
-const ROTATOR_CROP_ZOOM = "w='iw*0.2944':h='ih*0.46':x='iw*0.6928':y='ih*0.137'";
-const INFO_CROP_ZOOM = "w='iw*0.127236':h='ih*0.08372':x='iw*0.005532':y='ih*0.20434'";
+// interrupt": the visual framing punches in on a beat change so the shot
+// isn't perfectly static for the whole clip, without any new capture/
+// timing machinery (same DOM pixels, same evidence, just a different
+// centered crop of them). Punch amount raised from an 8% shrink to 20%
+// per direct feedback wanting a noticeably tighter/more magnified zoom
+// than the earlier subtle version - center point is still preserved
+// algebraically from ROTATOR_CROP/INFO_CROP's own real x/y/w/h
+// (new_w = w*0.8, new_x = x + w*0.1, etc.), not a separately eyeballed
+// region. Matches the shrink factor rectToCropFilterZoom now applies to
+// the real per-beat measured rect below.
+const ROTATOR_CROP_ZOOM = "w='iw*0.256':h='ih*0.40':x='iw*0.712':y='ih*0.167'";
+const INFO_CROP_ZOOM = "w='iw*0.11064':h='ih*0.0728':x='iw*0.01383':y='ih*0.2098'";
 
 // Real user feedback on a produced clip: "Panel is too text-heavy" /
 // "Visual doesn't match what's narrated". Root cause: the rotator panel
@@ -120,10 +122,10 @@ function rectToCropFilter(rect) {
   return `w='iw*${(w / SOURCE_WIDTH).toFixed(6)}':h='ih*${(h / SOURCE_HEIGHT).toFixed(6)}':` +
     `x='iw*${(x / SOURCE_WIDTH).toFixed(6)}':y='ih*${(y / SOURCE_HEIGHT).toFixed(6)}'`;
 }
-// Same ~8% tighter/recentered algebra used to derive ROTATOR_CROP_ZOOM from
+// Same 20% tighter/recentered algebra used to derive ROTATOR_CROP_ZOOM from
 // ROTATOR_CROP, applied to the real measured rect instead of the static one.
 function rectToCropFilterZoom(rect) {
-  const shrink = 0.92;
+  const shrink = 0.8;
   const zw = rect.width * shrink;
   const zh = rect.height * shrink;
   const zx = rect.x + (rect.width - zw) / 2;
@@ -132,20 +134,31 @@ function rectToCropFilterZoom(rect) {
 }
 
 // Fallback timing only - used when narration isn't available/fails
-// entirely (see synthesizeNarrationSegments's all-or-nothing behavior), so
-// the clip still has a sensible pace with no real audio driving it. Back
-// to the original blueprint's tight ~11s pacing (was stretched to 10s/beat
-// for a 30s target, then reverted) per direct request for tighter,
-// better-paced editing - matches the reference clip's own brisk cutting
-// rhythm instead of padding out runtime.
+// entirely (see synthesizeNarrationSegments's all-or-nothing behavior).
+// Each beat's own real pace stays tight/brisk (no beat is individually
+// stretched out); applyMinClipDuration below is what brings the clip's
+// TOTAL length up to the real ~30s benchmark, as extra hold time on the
+// closing beat only - not by slowing down beats 0-2.
 const DEFAULT_BEAT_DURATIONS_S = [2.7, 2.8, 2.7, 2.8];
 
-// No artificial minimum clip length (the earlier MIN_CLIP_DURATION_S
-// floor - 15s, then 30s - was removed per direct request: "make the video
-// edit tighter"). The clip runs exactly as long as the real narration
-// actually takes, beat by beat, with no padded silence tacked onto the
-// end to hit a target duration - that padding was making the edit feel
-// looser/slower, not more substantial.
+// A FLOOR, not a target to hit exactly and not a ceiling to truncate down
+// to - real narration should run however long it actually takes. This
+// only ever pads UP when real content came out short, added as extra
+// hold time on the LAST beat only (silence there is filled by
+// renderVideo's existing apad) - a natural pause on the closing beat, not
+// mid-clip dead air. Removed entirely once for "make the video edit
+// tighter", then reinstated at 30s per direct confirmation that ~30s is
+// the actual real-world benchmark length - "tighter" turned out to mean
+// the crop/zoom framing (see ROTATOR_CROP_ZOOM's 20% punch-in above), not
+// a shorter overall runtime.
+const MIN_CLIP_DURATION_S = 30;
+function applyMinClipDuration(beatDurations) {
+  const total = beatDurations.reduce((sum, d) => sum + d, 0);
+  if (total >= MIN_CLIP_DURATION_S) return beatDurations;
+  const out = [...beatDurations];
+  out[out.length - 1] += MIN_CLIP_DURATION_S - total;
+  return out;
+}
 
 // Builds the KEYFRAMES array for one clip from real per-beat narration
 // durations (or the DEFAULT_BEAT_DURATIONS_S fallback) and each beat's own
@@ -921,11 +934,11 @@ export async function generateAndUploadClip(signal) {
     let narrationPath = null;
     let keyframes;
     if (narrationSegments) {
-      keyframes = buildKeyframes(narrationSegments.map((s) => s.duration), ARC_META);
+      keyframes = buildKeyframes(applyMinClipDuration(narrationSegments.map((s) => s.duration)), ARC_META);
       narrationPath = path.join(frameDir, "narration.mp3");
       await concatAudioSegments(narrationSegments, narrationPath);
     } else {
-      keyframes = buildKeyframes(DEFAULT_BEAT_DURATIONS_S, ARC_META);
+      keyframes = buildKeyframes(applyMinClipDuration(DEFAULT_BEAT_DURATIONS_S), ARC_META);
     }
 
     // Real per-beat narration duration now drives how long each beat's
