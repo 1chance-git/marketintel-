@@ -117,8 +117,17 @@ const TIGHT_CROP_PAD_PX = 10;
 function rectToCropFilter(rect) {
   const x = Math.max(0, rect.x - TIGHT_CROP_PAD_PX);
   const y = Math.max(0, rect.y - TIGHT_CROP_PAD_PX);
-  const w = Math.min(SOURCE_WIDTH - x, rect.width + TIGHT_CROP_PAD_PX * 2);
-  const h = Math.min(SOURCE_HEIGHT - y, rect.height + TIGHT_CROP_PAD_PX * 2);
+  // Floored at 1px - a real production crash traced to this: a rect near
+  // the source frame's right/bottom edge could make SOURCE_WIDTH-x (or
+  // -y) collapse toward 0, and ffmpeg's encoder init hard-fails on a
+  // crop with an effectively-zero dimension ("incorrect parameters such
+  // as width or height"), killing the whole clip. This is a second,
+  // independent guard from the caller's minimum-rect-size check (that one
+  // rejects a degenerate MEASURED rect; this one protects against the
+  // edge-clamping math itself producing a degenerate crop even from a
+  // real, reasonably-sized rect).
+  const w = Math.max(1, Math.min(SOURCE_WIDTH - x, rect.width + TIGHT_CROP_PAD_PX * 2));
+  const h = Math.max(1, Math.min(SOURCE_HEIGHT - y, rect.height + TIGHT_CROP_PAD_PX * 2));
   return `w='iw*${(w / SOURCE_WIDTH).toFixed(6)}':h='ih*${(h / SOURCE_HEIGHT).toFixed(6)}':` +
     `x='iw*${(x / SOURCE_WIDTH).toFixed(6)}':y='ih*${(y / SOURCE_HEIGHT).toFixed(6)}'`;
 }
@@ -807,7 +816,21 @@ async function captureFramesForKeyframes(page, frameDir, keyframes) {
     }
     if (beat.rotatorSlide !== null && beatIndex !== -1 && beatIndex !== lastMeasuredBeatIndex) {
       const rect = await page.evaluate(() => window.__mktRotatorTightRect?.() ?? null);
-      if (rect) {
+      // A real production crash traced to this: __mktRotatorTightRect()
+      // can catch the slide mid-transition (e.g. right after the forced
+      // rotatorSlide reassertion above, before the new row has actually
+      // laid out) and return a real but degenerate rect - near-zero width
+      // or height. That's still truthy, so it used to pass straight
+      // through into rectToCropFilter(Zoom), producing a crop fraction so
+      // thin ffmpeg's scale/encoder init failed outright ("Error while
+      // opening encoder... incorrect parameters such as width or
+      // height"), killing the whole clip. A sane minimum size (in real
+      // source px, well below any real header+row content) rejects those
+      // and falls back to the static crop for that beat instead - same
+      // "no measurement is better than a broken one" contract as the
+      // null case already handled below.
+      const MIN_TIGHT_RECT_PX = 30;
+      if (rect && rect.width >= MIN_TIGHT_RECT_PX && rect.height >= MIN_TIGHT_RECT_PX) {
         beat.crop = beatIndex % 2 === 0 ? rectToCropFilter(rect) : rectToCropFilterZoom(rect);
       }
       lastMeasuredBeatIndex = beatIndex;
