@@ -639,17 +639,30 @@ function buildFilterComplex(keyframes, dateText, hookTitle) {
   const branchStages = keyframes.map((k, i) => {
     return (
       `[s${i}]trim=start=${k.start}:end=${k.end},setpts=PTS-STARTPTS,` +
-      // format=yuv420p right after crop, before any scale: the mjpeg
-      // source frames decode as yuvj420p (JPEG/"full range"), which
+      // crop's own w/h come from arbitrary fractions (either the fixed
+      // ROTATOR_CROP/INFO_CROP constants or a real per-beat DOM
+      // measurement via rectToCropFilter) - nothing guarantees the pixel
+      // count ffmpeg evaluates them to is even. That's exactly what a
+      // real production crash traced to: forcing yuv420p right after crop
+      // (below) requires even width/height for its 4:2:0 chroma planes,
+      // and an odd-pixel crop left it with no valid layout to configure -
+      // "[Parsed_scale_N] Failed to configure output pad", killing the
+      // whole clip. scale=trunc(iw/2)*2:trunc(ih/2)*2 rounds DOWN to the
+      // nearest even pixel count regardless of what crop produced, before
+      // format=yuv420p ever sees it - cheap (at most a 1px trim) and
+      // unconditionally safe for every crop source, not just the dynamic
+      // ones.
+      `crop=${k.crop}:exact=1,scale=trunc(iw/2)*2:trunc(ih/2)*2,` +
+      // format=yuv420p right after crop/even-round, before any scale: the
+      // mjpeg source frames decode as yuvj420p (JPEG/"full range"), which
       // swscale treats as ambiguous at every later scale/overlay op in
       // this branch, logging a "deprecated pixel format used, make sure
       // you did set range correctly" warning per op. Normalizing to a
-      // properly range-tagged yuv420p once, immediately after crop,
-      // removes the ambiguity at its source instead of at every
-      // downstream scale call - confirmed via a real production run that
-      // this warning alone could flood stderr heavily enough to bury the
-      // actual fatal error underneath it in the captured tail.
-      `crop=${k.crop}:exact=1,format=yuv420p,split=2[c${i}fg][c${i}bg];` +
+      // properly range-tagged yuv420p once removes the ambiguity at its
+      // source instead of at every downstream scale call - confirmed via
+      // a real production run that this warning alone could flood stderr
+      // heavily enough to bury the actual fatal error underneath it.
+      `format=yuv420p,split=2[c${i}fg][c${i}bg];` +
       `[c${i}bg]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,` +
       `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},gblur=sigma=20[c${i}bgblur];` +
       `[c${i}fg]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease[c${i}fgscaled];` +
