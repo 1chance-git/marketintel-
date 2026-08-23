@@ -915,6 +915,24 @@ function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, h
       // the real fatal error is finally visible on the next failure
       // instead of being drowned out again.
       "-hide_banner", "-loglevel", "error",
+      // Four repeated production crashes ("Error reinitializing filters!" /
+      // "Failed to inject frame into filter network: Resource temporarily
+      // unavailable") never reproduced locally despite identical crop
+      // values and script content - "Resource temporarily unavailable" is
+      // a real OS-level EAGAIN, not a filter-graph semantic error. The one
+      // real difference between the two environments: production runs
+      // this alongside stream_engine.js's OWN separate, continuous ffmpeg
+      // RTMP process in the same container the whole time, while every
+      // local reproduction attempt ran this in isolation. libx264
+      // auto-detected threads=22 in production logs, and this filter
+      // graph runs a CPU-heavy gblur per branch (4 branches) on top of
+      // that - two ffmpeg processes each spinning up dozens of threads in
+      // the same container is a plausible way to hit a real thread/fd
+      // ceiling, which is exactly what EAGAIN from pthread_create looks
+      // like from ffmpeg's side. Capping this process's own thread/filter
+      // parallelism costs some render speed but removes it as a
+      // contributor to that ceiling regardless of the exact limit hit.
+      "-filter_complex_threads", "2",
       "-framerate", String(CLIP_FPS),
       "-i", path.join(frameDir, "frame_%05d.jpg"),
       ...audioInputArgs,
@@ -925,8 +943,11 @@ function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, h
       // panels and text, not natural video, so x264's motion-focused psy
       // optimizations buy nothing here and stillimage tuning keeps edges/
       // text sharper instead. Verified locally that -tune stillimage is
-      // accepted by this ffmpeg/libx264 build.
-      "-c:v", "libx264", "-preset", "fast", "-tune", "stillimage", "-crf", "16", "-pix_fmt", "yuv420p",
+      // accepted by this ffmpeg/libx264 build. -threads 2 caps the
+      // encoder's own thread pool for the same resource-contention reason
+      // as -filter_complex_threads above (see comment there) - this
+      // process auto-detected 22 threads in production with no cap.
+      "-c:v", "libx264", "-preset", "fast", "-tune", "stillimage", "-crf", "16", "-pix_fmt", "yuv420p", "-threads", "2",
       "-c:a", "aac", "-b:a", "128k",
       "-t", String(durationS),
       outputPath,
