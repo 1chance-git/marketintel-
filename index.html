@@ -1030,6 +1030,17 @@
     // it read as visually empty/uninformative to viewers even once
     // rendering correctly - in favor of the TREND/VOLUME/EMA/VWAP info
     // panel, which is the actually legible content in that area.
+    // Called once by video_clipper.js right after it reads narration
+    // evidence (technical trend/volume + sentiment direction) - freezes
+    // every value that evidence was built from so later frame captures
+    // (the sentiment beat in particular runs many seconds after evidence
+    // is read, well past this page's own live update cadence) can't drift
+    // away from what the narration already committed to saying. See the
+    // window.__mktFrozen checks in updateChartIndicators and pollGrokData.
+    window.__mktFreeze = () => {
+      window.__mktFrozen = true;
+    };
+
     window.__mktChartDebug = () => {
       const rectOf = (el) => {
         if (!el) return null;
@@ -1367,7 +1378,11 @@
         }
       }
 
-      if (candles.length) {
+      // __mktFreeze() (see window.__mktChartDebug below) stops these badges
+      // from moving once video_clipper.js has locked in narration text off
+      // their current values - candleData itself keeps updating in the
+      // background regardless, only the visible TREND/VOLUME text is held.
+      if (candles.length && !window.__mktFrozen) {
         setBadge(trendValueEl, computeTrend(ema20, ema50), "BULLISH", "BEARISH");
         setVolumeBadge(volumeValueEl, computeVolumeLevel(candles));
       } else {
@@ -2147,6 +2162,14 @@
       if (!data || typeof data !== "object") {
         return;
       }
+
+      // __mktFreeze() holds every rotator card (ETF/macro/narrative/
+      // sentiment) and its DIRECTION classification at whatever they showed
+      // the instant video_clipper.js locked in narration text off them -
+      // otherwise a poll landing mid-render could silently move a card's
+      // text (or its classifyDirection() result) away from what the
+      // narration already committed to speaking.
+      if (window.__mktFrozen) return;
 
       renderMacro(data.etf_flows, data.system_macro);
       renderSentiment(data.x_narratives, data.sentiment);

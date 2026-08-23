@@ -805,6 +805,18 @@ async function openCapturePage() {
     console.log(`[CLIPPER] Chart debug at capture time: ${JSON.stringify(chartDebug)}`);
 
     const evidence = await readOnScreenEvidence(page);
+    // Freeze the page's own live displays (TREND/VOLUME badges, rotator
+    // card text, sentiment DIRECTION) at exactly this moment - narration
+    // is about to be built from `evidence` above, but frame capture for
+    // later beats (especially the closing sentiment beat) happens many
+    // seconds from now, and this page keeps polling/streaming live data
+    // the whole time. Without this, a poll or candle update landing
+    // mid-render can move what's on screen away from what narration
+    // already committed to saying (confirmed in production: narration
+    // said "sentiment reads mixed" and "volume is thin" while the
+    // captured frame showed bullish/high, because the DOM had moved on
+    // by the time that beat was actually screenshotted).
+    await page.evaluate(() => window.__mktFreeze?.());
     return { page, browser, server, evidence };
   } catch (err) {
     if (browser) {
@@ -1069,7 +1081,15 @@ export async function generateAndUploadClip(signal) {
     }
 
     console.log("[UPLOADING TO YOUTUBE]");
-    const watchUrl = await uploadShort(videoBuffer, { signal, overlayText: scripts });
+    // overlayText[0] drives the YouTube title (see buildShortMetadata) - it
+    // must be the same text as the on-screen hook overlay (hookTitle.text),
+    // not always scripts[0]/etfSegment. buildHookTitle prefers the
+    // narrative beat over the ETF beat, so a plain `scripts` array here
+    // produced a real mismatch: title read "Institutional flows...
+    // BlackRock..." (scripts[0]) while the video itself opened on "ON THE
+    // NARRATIVE..." (hookTitle.text) - title and clip disagreeing about
+    // what the clip is even about.
+    const watchUrl = await uploadShort(videoBuffer, { signal, overlayText: [hookTitle.text, ...scripts.slice(1)] });
     console.log(`[REVIEW URL GENERATED] ${watchUrl}`);
 
     await browser.close();
