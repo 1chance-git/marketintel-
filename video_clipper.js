@@ -634,6 +634,19 @@ function buildFilterComplex(keyframes, dateText, hookTitle) {
   // concat reconstructs continuous PTS across segments, so a single
   // downstream between(t,...) drawtext pass still works unmodified.
   const branchLabels = keyframes.map((_, i) => `seg${i}`);
+  // Forces every input frame to a known-fixed SOURCE_WIDTH x SOURCE_HEIGHT
+  // before any split/crop happens - a real production crash ("Error
+  // reinitializing filters!" / "Failed to inject frame into filter
+  // network: Resource temporarily unavailable", right as ffmpeg processes
+  // stream #0:0) has the exact signature of an input frame arriving at an
+  // unexpected size mid-stream, which every downstream crop/scale filter
+  // in this graph implicitly assumes is constant (SOURCE_WIDTH x
+  // SOURCE_HEIGHT for the whole 1280x720 viewport). Puppeteer's
+  // page.screenshot() should always match the fixed viewport set in
+  // openCapturePage(), but nothing actually guarantees that on every
+  // single one of ~900 JPEG frames - this makes the assumption true by
+  // construction instead of by luck, regardless of the real cause.
+  const normalizeStage = `scale=${SOURCE_WIDTH}:${SOURCE_HEIGHT}`;
   const splitStage = `split=${keyframes.length}${keyframes.map((_, i) => `[s${i}]`).join("")}`;
   // blur_fill background instead of solid black pad: whenever a crop's
   // aspect ratio doesn't match the 1080x1920 output (which is most of the
@@ -707,7 +720,7 @@ function buildFilterComplex(keyframes, dateText, hookTitle) {
     ? `[vhook0]drawtext=fontfile=${FONT_PATH}:text='${escapeDrawtext(dateText)}':expansion=none:fontcolor=white@0.85:fontsize=26:borderw=2:bordercolor=black:x=w-text_w-24:y=h-text_h-40[vout]`
     : "[vhook0]copy[vout]";
 
-  return [`[0:v]${splitStage}`, ...branchStages, concatStage, hookStage, dateStage].join(";\n");
+  return [`[0:v]${normalizeStage}[vnorm0]`, `[vnorm0]${splitStage}`, ...branchStages, concatStage, hookStage, dateStage].join(";\n");
 }
 
 // Reads the exact numbers/labels the dashboard itself has already computed
