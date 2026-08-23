@@ -889,7 +889,16 @@ function renderVideo(frameDir, outputPath, narrationPath, keyframes, dateText, h
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-2000)}`));
+        // A real production crash's actual root cause (a filter-graph
+        // init error, not the generic "opening encoder" line beneath it)
+        // turned out to be getting pushed out of a too-small tail slice
+        // by a burst of unrelated "deprecated pixel format" swscale
+        // warnings earlier in the same stderr stream. Logging the FULL
+        // stderr here (not just what ends up in the thrown Error, which
+        // callers may truncate further) means the real cause survives
+        // even if a later error-message consumer trims it again.
+        console.error(`[CLIPPER] Full FFmpeg stderr on failure:\n${stderr}`);
+        reject(new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-4000)}`));
       }
     });
   });
