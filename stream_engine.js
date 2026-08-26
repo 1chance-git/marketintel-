@@ -139,6 +139,20 @@ const CAPTURE_HEIGHT = 720;
 const CAPTURE_FPS = 30;
 const FRAME_INTERVAL_MS = 1000 / CAPTURE_FPS;
 
+// Stream-level recovery (see handleStreamFailure/restartStream below): a
+// short fixed delay before respawning ffmpeg (long enough that a
+// transient RTMP hiccup on YouTube's side has a chance to clear, short
+// enough the stream isn't down for long) and a small bounded attempt
+// count so a persistently broken environment (e.g. ffmpeg binary/args
+// actually broken) can't retry forever in a tight loop - it gives up and
+// exits non-zero instead, handing off to Railway's container-level
+// restart as the last line of defense. Reset to 0 on every successful
+// restart, so a stream that later fails again after hours of healthy
+// running gets a fresh budget rather than being penalized forever for
+// one earlier incident.
+const STREAM_RESTART_DELAY_MS = 5_000;
+const MAX_CONSECUTIVE_STREAM_FAILURES = 5;
+
 // ---------------------------------------------------------------------------
 // YouTube RTMP output adapter (Block 8)
 //
@@ -434,6 +448,10 @@ export class VideoEngine {
     this.latestFrameBuffer = null;
     this.freshFrameCount = 0;
     this.statsTimer = null;
+
+    // Stream-level recovery state (see handleStreamFailure/restartStream).
+    this.consecutiveStreamFailures = 0;
+    this.streamRestartTimer = null;
   }
 
   async run() {
@@ -528,13 +546,49 @@ export class VideoEngine {
       return;
     }
 
+    let ffmpegReady;
     try {
-      this.ffmpeg = spawnFfmpeg(this.outputTarget);
+      ffmpegReady = this.spawnAndWireFfmpeg();
     } catch (err) {
       console.error(`[VIDEO_ENGINE] FFmpeg startup failed: ${err.message}`);
       await this.shutdown(1);
       return;
     }
+
+    if (!ffmpegReady) {
+      return;
+    }
+
+    // Never log the RTMP destination — it embeds the YouTube stream key.
+    const destinationLabel = this.outputTarget.mode === "rtmp"
+      ? "YouTube RTMP (destination redacted)"
+      : this.outputTarget.destination;
+    const durationLabel = this.durationMs === null ? "continuously (until stopped)" : `for ${this.durationMs / 1000}s`;
+
+    try {
+      await this.startScreencast();
+    } catch (err) {
+      console.error(`[VIDEO_ENGINE] Failed to start screencast: ${err.message}`);
+      await this.shutdown(1);
+      return;
+    }
+
+    console.log(`[VIDEO_ENGINE] Capturing at ${CAPTURE_FPS}fps ${durationLabel} -> ${destinationLabel}`);
+    this.capturing = true;
+    this.startTime = Date.now();
+    this.scheduleEncodeTick();
+    this.startStatsLogger();
+  }
+
+  // Spawns ffmpeg and wires up its full lifecycle (process "error", stdin
+  // "error", stderr logging, "close"/exit) - extracted out of run() so
+  // restartStream() below can respawn a fresh ffmpeg after a failure
+  // using the exact same wiring, instead of a second, drift-prone copy.
+  // Returns false if ffmpeg's own process-level "error" event fired
+  // synchronously enough to observe before returning (mirrors run()'s
+  // original inline check); throws if spawnFfmpeg() itself throws.
+  spawnAndWireFfmpeg() {
+    this.ffmpeg = spawnFfmpeg(this.outputTarget);
 
     let ffmpegReady = true;
     this.ffmpeg.once("error", (err) => {
@@ -546,18 +600,23 @@ export class VideoEngine {
     // The process-level "error" event above does NOT cover errors on the
     // stdin stream itself (a separate EventEmitter) - if FFmpeg dies or
     // its stdin pipe closes out from under Node while encodeTick() is
-    // mid-write (e.g. FFmpeg OOM-killed, segfaults, or exits between
-    // writes), the write fails asynchronously with EPIPE and the stream
-    // emits its own "error" event. With no listener for it, that's a
-    // Node fatal-error path - an uncaught exception that crashes the
-    // whole process (taking down the co-located Supabase poller too in
-    // --live mode) and skips the graceful finishCapture()/shutdown()
-    // path entirely, leaking the Puppeteer browser and HTTP server.
-    // Route it into the same graceful path encodeTick()'s own try/catch
-    // already uses for synchronous write failures.
+    // mid-write (e.g. FFmpeg OOM-killed, RTMP connection dropped by
+    // YouTube, exits between writes), the write fails asynchronously
+    // with EPIPE and the stream emits its own "error" event. With no
+    // listener for it, that's a Node fatal-error path - an uncaught
+    // exception that crashes the whole process.
+    //
+    // This must NOT be routed through finishCapture()/shutdown() (real
+    // production incident, 2026-08-26: an EPIPE here reached
+    // finishCapture(), which unconditionally calls shutdown(0), which
+    // calls process.exit(0) - killing the entire Node process, including
+    // the co-located Supabase poller, and leaving Railway with a "clean"
+    // exit code it never restarts). finishCapture() means "capture ended
+    // on purpose" (natural duration elapsed, or an intentional stop) -
+    // an RTMP pipe breaking mid-stream is a STREAM failure, not that, so
+    // it gets its own handler that survives (and now retries) instead.
     this.ffmpeg.stdin.on("error", (err) => {
-      console.error(`[VIDEO_ENGINE] FFmpeg stdin error: ${err.message}`);
-      this.finishCapture();
+      this.handleStreamFailure(err);
     });
 
     // FFmpeg's stderr is where RTMP connection status/errors show up
@@ -643,29 +702,62 @@ export class VideoEngine {
       });
     });
 
-    if (!ffmpegReady) {
-      return;
-    }
+    return ffmpegReady;
+  }
 
-    // Never log the RTMP destination — it embeds the YouTube stream key.
-    const destinationLabel = this.outputTarget.mode === "rtmp"
-      ? "YouTube RTMP (destination redacted)"
-      : this.outputTarget.destination;
-    const durationLabel = this.durationMs === null ? "continuously (until stopped)" : `for ${this.durationMs / 1000}s`;
+  // Respawns ffmpeg after handleStreamFailure() has already cleaned up
+  // the previous (dead) one, then resumes the existing capture loop -
+  // Puppeteer/the CDP screencast are untouched and were never stopped,
+  // so this only needs to bring a fresh ffmpeg process back, not redo
+  // page load/screencast setup. Bounded by MAX_CONSECUTIVE_STREAM_FAILURES
+  // (see handleStreamFailure, which increments/checks the counter before
+  // scheduling this).
+  restartStream() {
+    if (this.shuttingDown) return;
 
+    console.log(`[VIDEO_ENGINE] STREAM_RESTARTING: attempt ${this.consecutiveStreamFailures}/${MAX_CONSECUTIVE_STREAM_FAILURES}`);
+
+    let ffmpegReady;
     try {
-      await this.startScreencast();
+      ffmpegReady = this.spawnAndWireFfmpeg();
     } catch (err) {
-      console.error(`[VIDEO_ENGINE] Failed to start screencast: ${err.message}`);
-      await this.shutdown(1);
+      this.consecutiveStreamFailures += 1;
+      console.error(`[VIDEO_ENGINE] STREAM_RESTART_FAILED: ffmpeg respawn failed: ${err.message}`);
+      this.scheduleStreamRestartOrGiveUp();
       return;
     }
 
-    console.log(`[VIDEO_ENGINE] Capturing at ${CAPTURE_FPS}fps ${durationLabel} -> ${destinationLabel}`);
+    if (!ffmpegReady) {
+      // The process "error" handler wired by spawnAndWireFfmpeg() already
+      // routed this to shutdown(1) - nothing more to do here.
+      return;
+    }
+
     this.capturing = true;
-    this.startTime = Date.now();
     this.scheduleEncodeTick();
     this.startStatsLogger();
+    console.log(`[VIDEO_ENGINE] STREAM_RESTARTED after ${this.consecutiveStreamFailures} failure(s)`);
+    this.consecutiveStreamFailures = 0;
+  }
+
+  // Shared bounded-retry decision used by both handleStreamFailure() (the
+  // initial failure) and restartStream() (a respawn attempt that itself
+  // fails) - kept in one place so the give-up threshold can't drift
+  // between the two call sites.
+  scheduleStreamRestartOrGiveUp() {
+    if (this.consecutiveStreamFailures >= MAX_CONSECUTIVE_STREAM_FAILURES) {
+      console.error(
+        `[VIDEO_ENGINE] STREAM_RESTART_FAILED: giving up after ${this.consecutiveStreamFailures} consecutive ` +
+        "failures - exiting non-zero so Railway's container-level restart can take over as the last line of defense"
+      );
+      process.exit(1);
+      return;
+    }
+    console.log(`[VIDEO_ENGINE] STREAM_RETRY_BACKOFF: waiting ${STREAM_RESTART_DELAY_MS}ms before the next attempt`);
+    this.streamRestartTimer = setTimeout(() => this.restartStream(), STREAM_RESTART_DELAY_MS);
+    if (typeof this.streamRestartTimer.unref === "function") {
+      this.streamRestartTimer.unref();
+    }
   }
 
   // Periodic (not per-frame) throughput summary: how often CDP actually
@@ -744,9 +836,33 @@ export class VideoEngine {
   async encodeTick() {
     if (!this.capturing) return;
 
-    if (!this.latestFrameBuffer || !this.ffmpeg || this.ffmpeg.stdin.destroyed) {
-      // No frame arrived yet (e.g. very first tick) or ffmpeg unavailable —
-      // skip this slot rather than write nothing or block.
+    if (!this.ffmpeg) {
+      // A stream failure is already being handled/restarted elsewhere
+      // (handleStreamFailure already ran) - just wait for that to finish,
+      // don't re-trigger it from here.
+      this.scheduleEncodeTick();
+      return;
+    }
+
+    if (this.ffmpeg.stdin.destroyed) {
+      // Real-world gap found via actual testing (killing a live ffmpeg
+      // process, not just simulating a write error): ffmpeg's stdin pipe
+      // can end up destroyed WITHOUT an in-flight write ever throwing
+      // (e.g. the process dies between ticks, or Node marks the stream
+      // destroyed once it notices the child is gone before the next
+      // write is attempted). The old code silently skipped this tick
+      // forever in that case - frame arrival kept logging via the
+      // independent screencast, but nothing ever wrote to ffmpeg again
+      // and no failure/restart was ever triggered. Must be treated as a
+      // stream failure exactly like an active EPIPE, not silently
+      // ignored.
+      this.handleStreamFailure(new Error("ffmpeg stdin closed unexpectedly"));
+      return;
+    }
+
+    if (!this.latestFrameBuffer) {
+      // No frame arrived yet (e.g. very first tick) - skip this slot
+      // rather than write nothing or block.
       this.scheduleEncodeTick();
       return;
     }
@@ -761,8 +877,11 @@ export class VideoEngine {
         await new Promise((resolve) => this.ffmpeg.stdin.once("drain", resolve));
       }
     } catch (err) {
-      console.error(`[VIDEO_ENGINE] Failed to write frame to FFmpeg stdin: ${err.message}`);
-      this.finishCapture();
+      // Same class of failure as the async stdin "error" listener (see
+      // spawnAndWireFfmpeg) - a synchronous throw from write() must get
+      // the same recoverable handling, not the old finishCapture()/
+      // shutdown(0)/process.exit(0) path.
+      this.handleStreamFailure(err);
       return;
     }
 
@@ -781,6 +900,69 @@ export class VideoEngine {
     }
     console.log(`[VIDEO_ENGINE] Capture complete: ${this.frameCount} frames encoded`);
     this.shutdown(0);
+  }
+
+  // A STREAM-level failure (currently: the ffmpeg stdin "error" listener
+  // above, e.g. EPIPE from a broken RTMP pipe) - distinct from
+  // finishCapture(), which means "capture ended on purpose". This must
+  // never call shutdown()/process.exit(): the Node process (and the
+  // co-located Supabase poller/YouTube publisher in --live mode) has to
+  // survive an ffmpeg/RTMP failure. Block 2 scope only: detect and
+  // safely contain the failure. It deliberately does NOT restart ffmpeg
+  // or the capture loop yet - that's a separate, later change. After
+  // this runs, this.capturing/this.ffmpeg are left in a clean, known
+  // "not capturing" state.
+  handleStreamFailure(err) {
+    // Idempotency guard: a real ffmpeg death can fire more than one
+    // event (stdin "error" and process "close" in close succession, or
+    // this handler re-entering if something else writes to the already-
+    // destroyed stdin) - only handle the first one, and never once an
+    // intentional shutdown() is already underway.
+    if (this.shuttingDown || !this.capturing) return;
+    this.capturing = false;
+
+    if (this.captureTimer) {
+      clearTimeout(this.captureTimer);
+      this.captureTimer = null;
+    }
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+    // Deliberately NOT stopping the CDP screencast here (unlike
+    // finishCapture()): it's independent of ffmpeg and keeps
+    // this.latestFrameBuffer fresh in the background the whole time
+    // ffmpeg is down, so restartStream() can resume encoding immediately
+    // with a current frame instead of a stale/frozen one or needing to
+    // redo screencast startup.
+
+    this.consecutiveStreamFailures += 1;
+    console.error(
+      `[VIDEO_ENGINE] FFMPEG_FAILED: ${err?.message || err} (frames encoded before failure: ${this.frameCount}, ` +
+      `consecutive failures: ${this.consecutiveStreamFailures})`
+    );
+
+    // Clean up the dead ffmpeg process/streams so the restart below can
+    // never end up with two ffmpeg processes both trying to write to the
+    // same RTMP destination at once.
+    const failedFfmpeg = this.ffmpeg;
+    this.ffmpeg = null;
+    if (failedFfmpeg) {
+      if (!failedFfmpeg.stdin.destroyed) {
+        failedFfmpeg.stdin.destroy();
+      }
+      if (failedFfmpeg.exitCode === null && failedFfmpeg.signalCode === null) {
+        failedFfmpeg.kill("SIGKILL");
+      }
+    }
+
+    // Browser, local HTTP server, and the Supabase poller (a fully
+    // separate class/timer in --live mode) are untouched - this is a
+    // stream failure, not an application shutdown, so nothing here ends
+    // the Node process. No process.exit() call in this method itself;
+    // scheduleStreamRestartOrGiveUp() is the only path that can exit,
+    // and only after MAX_CONSECUTIVE_STREAM_FAILURES is exceeded.
+    this.scheduleStreamRestartOrGiveUp();
   }
 
   async shutdown(exitCode = 0) {
