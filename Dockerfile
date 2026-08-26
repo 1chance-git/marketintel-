@@ -46,23 +46,15 @@ RUN npm ci --omit=dev
 
 COPY . .
 
-# macro_adapter.py (SPY/QQQ, own isolated process/state/output file - see
-# its own header comment) is launched as a background co-process, then
-# `exec` replaces this shell with the node process so node becomes PID 1
-# and still receives Railway's SIGTERM directly for a clean shutdown, same
-# as before this change. macro_adapter.py has its own internal try/except
-# retry loop (see main()) and needs no env vars/secrets, so nothing here
-# needs to supervise/restart it - if the container itself stops, the whole
-# process tree (including this background process) is torn down with it.
-#
-# `-u` (unbuffered stdout): a real deploy of this CMD without `-u`
-# produced a running stream with zero [MACRO_ADAPTER] log lines ever
-# appearing, despite the build installing python3/python3-requests
-# successfully. Python fully buffers stdout by default when it isn't a
-# TTY (exactly the case for a Docker container's log pipe) - the leading
-# theory is macro_adapter.py's print() output was sitting unflushed
-# rather than the process failing outright, but that couldn't be
-# directly confirmed without container shell access. `-u` forces
-# unbuffered stdout/stderr regardless, which is the correct fix either
-# way and costs nothing.
-CMD ["sh", "-c", "python3 -u macro_adapter.py & exec node stream_engine.js --live"]
+# macro_adapter.py (SPY/QQQ) is launched BY stream_engine.js itself
+# (startMacroAdapter(), --live mode) as a piped child process, not from
+# this CMD directly. Tried a shell "python3 -u macro_adapter.py & exec
+# node ..." background-job form here first - a real deploy of that
+# produced a healthy stream but ZERO [MACRO_ADAPTER] log lines ever, even
+# with unbuffered stdout, for a reason never confirmed (no container
+# shell access to inspect it directly). Having Node spawn and relay the
+# child's output itself removes that ambiguity - it's the exact same
+# stdout every other log line in this file already reaches reliably.
+# python3/python3-requests above are still required here since Node only
+# spawns the `python3` binary; it doesn't provide it.
+CMD ["node", "stream_engine.js", "--live"]

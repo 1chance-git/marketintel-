@@ -1019,6 +1019,64 @@ function isMainModule() {
   return import.meta.url === `file://${process.argv[1]}`;
 }
 
+// Launches macro_adapter.py (SPY/QQQ - see its own header comment) as a
+// child process and relays its output through THIS process's own
+// stdout/stderr - fully isolated in data/state terms (own process, own
+// polling loop, own output file, no shared state with StreamEngine/
+// VideoEngine), only its logging is piped through here.
+//
+// The Dockerfile previously tried launching it as a plain shell
+// background job (`python3 -u macro_adapter.py & exec node ...`) - a
+// real deploy of that produced a healthy stream but ZERO
+// [MACRO_ADAPTER] log lines ever, even with `-u` (unbuffered stdout)
+// added. The exact cause was never confirmed (no container shell access
+// to inspect it directly), but spawning and piping the child through
+// Node's own stdout - the exact same stream every other log line in
+// this file already reaches reliably - removes that ambiguity
+// entirely instead of depending on Railway's specific process/log-
+// capture semantics for a background shell job.
+function startMacroAdapter() {
+  const RESTART_DELAY_MS = 10_000;
+
+  const launch = () => {
+    let proc;
+    try {
+      proc = spawn("python3", ["-u", "macro_adapter.py"], { stdio: ["ignore", "pipe", "pipe"] });
+    } catch (err) {
+      console.error(`[STREAM_ENGINE] Failed to spawn macro_adapter.py: ${err.message} - retrying in ${RESTART_DELAY_MS}ms`);
+      const t = setTimeout(launch, RESTART_DELAY_MS);
+      if (typeof t.unref === "function") t.unref();
+      return;
+    }
+
+    const relay = (stream, log) => {
+      let buffer = "";
+      stream.on("data", (chunk) => {
+        buffer += chunk.toString();
+        let newlineIndex;
+        while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          if (line) log(line);
+        }
+      });
+    };
+    relay(proc.stdout, (line) => console.log(line));
+    relay(proc.stderr, (line) => console.error(line));
+
+    proc.on("error", (err) => {
+      console.error(`[STREAM_ENGINE] macro_adapter.py process error: ${err.message}`);
+    });
+    proc.on("close", (code) => {
+      console.error(`[STREAM_ENGINE] macro_adapter.py exited (code=${code}) - restarting in ${RESTART_DELAY_MS}ms`);
+      const t = setTimeout(launch, RESTART_DELAY_MS);
+      if (typeof t.unref === "function") t.unref();
+    });
+  };
+
+  launch();
+}
+
 if (isMainModule()) {
   const args = process.argv.slice(2);
 
@@ -1077,6 +1135,7 @@ if (isMainModule()) {
     }
 
     startAutoPublish();
+    startMacroAdapter();
 
     const videoEngine = new VideoEngine({ durationMs: null });
 
