@@ -1,0 +1,10 @@
+# Minimum dependency for the isolated SPY/QQQ prototype adapter
+# (macro_adapter.py). Not used by any existing Node.js path in this repo -
+# stream_engine.js, supabase_client.js, video_clipper.js, and
+# youtube_publisher.js remain pure Node/npm and untouched by this file.
+#
+# Block 4: switched from yfinance to a direct `requests` call against
+# Yahoo's own chart endpoint - yfinance's curl_cffi-based transport gets
+# its connections reset by this project's sandbox HTTPS proxy, confirmed
+# via direct testing (see macro_adapter.py's header comment for detail).
+requests>=2.31.0

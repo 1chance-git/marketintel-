@@ -4,3 +4,4 @@ node_modules/
 *.log
 *.mp4
 _railway_dashboard_screenshot*.jpg
+__pycache__/

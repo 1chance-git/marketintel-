@@ -759,6 +759,14 @@
   .ticker-item .t-down { color: #ff3b30; }
   .ticker-item .t-flat { color: #9a9a9a; }
 
+  /* SPY/QQQ (Yahoo Finance prototype adapter) - same ticker-item shape as the
+     crypto entries, just a distinct ticker-label color so the two data
+     sources (Kraken vs. Yahoo Finance) are visually distinguishable at a
+     glance. Price/change colors (.t-up/.t-down/.t-flat) are shared. */
+  .ticker-item-macro .t-ticker {
+    color: #c9a227;
+  }
+
   /* ---------- 6. WATERMARK ---------- */
   #watermark {
     flex: 0 0 16px;
@@ -2333,43 +2341,60 @@
       flashTimers[ticker] = setTimeout(() => el.classList.remove("mb-flash"), 400);
     }
 
+    // Extracted verbatim from the per-item DOM-building code that used to
+    // live inline in renderTickerStrip() below - behavior-preserving, not
+    // a logic change. Exists so the isolated SPY/QQQ macro-ticker items
+    // (added below) can share the exact same markup/format ("follow the
+    // existing format" requirement) without duplicating this code.
+    function buildTickerItemEl(ticker, last, changePct, extraClass) {
+      const priceStr = last.toLocaleString("en-US", {
+        minimumFractionDigits: last >= 100 ? 2 : 4,
+        maximumFractionDigits: last >= 100 ? 2 : 4,
+      });
+
+      let cls = "t-flat";
+      if (Number.isFinite(changePct)) {
+        cls = changePct > 0 ? "t-up" : changePct < 0 ? "t-down" : "t-flat";
+      }
+
+      const item = document.createElement("span");
+      item.className = extraClass ? `ticker-item ${extraClass}` : "ticker-item";
+      const tickerSpan = document.createElement("span");
+      tickerSpan.className = "t-ticker";
+      tickerSpan.textContent = ticker;
+      item.appendChild(tickerSpan);
+
+      const priceSpan = document.createElement("span");
+      priceSpan.textContent = priceStr;
+      item.appendChild(priceSpan);
+
+      if (Number.isFinite(changePct)) {
+        const changeSpan = document.createElement("span");
+        changeSpan.className = cls;
+        const arrow = changePct > 0 ? "▲" : changePct < 0 ? "▼" : "●";
+        changeSpan.textContent = ` ${arrow}${Math.abs(changePct).toFixed(2)}%`;
+        item.appendChild(changeSpan);
+      }
+      return item;
+    }
+
     function renderTickerStrip() {
       const order = ["BTC", "ETH", "SOL", "XRP"];
       const parts = [];
       order.forEach((ticker) => {
         const state = tickerState[ticker];
         if (!state || !Number.isFinite(state.last)) return; // omit unavailable assets
+        parts.push(buildTickerItemEl(ticker, state.last, state.changePct));
+      });
 
-        const priceStr = state.last.toLocaleString("en-US", {
-          minimumFractionDigits: state.last >= 100 ? 2 : 4,
-          maximumFractionDigits: state.last >= 100 ? 2 : 4,
-        });
-
-        let cls = "t-flat";
-        if (Number.isFinite(state.changePct)) {
-          cls = state.changePct > 0 ? "t-up" : state.changePct < 0 ? "t-down" : "t-flat";
-        }
-
-        const item = document.createElement("span");
-        item.className = "ticker-item";
-        const tickerSpan = document.createElement("span");
-        tickerSpan.className = "t-ticker";
-        tickerSpan.textContent = ticker;
-        item.appendChild(tickerSpan);
-
-        const priceSpan = document.createElement("span");
-        priceSpan.textContent = priceStr;
-        item.appendChild(priceSpan);
-
-        if (Number.isFinite(state.changePct)) {
-          const changeSpan = document.createElement("span");
-          changeSpan.className = cls;
-          const arrow = state.changePct > 0 ? "▲" : state.changePct < 0 ? "▼" : "●";
-          changeSpan.textContent = ` ${arrow}${Math.abs(state.changePct).toFixed(2)}%`;
-          item.appendChild(changeSpan);
-        }
-
-        parts.push(item);
+      // SPY/QQQ (Yahoo Finance prototype adapter) - the ONE line in this crypto
+      // block that reads from the isolated macro-ticker script below.
+      // tickerState/candleData/the Kraken WebSocket itself are completely
+      // untouched by this; window.__mktMacroTickerItems is an optional
+      // hook (guarded with `?.`) so this crypto path behaves identically
+      // even if that script were removed entirely.
+      window.__mktMacroTickerItems?.().forEach(({ ticker, last, changePct }) => {
+        parts.push(buildTickerItemEl(ticker, last, changePct, "ticker-item-macro"));
       });
 
       tickerTrackEl.textContent = "";
@@ -2378,6 +2403,11 @@
       parts.forEach((el) => tickerTrackEl.appendChild(el));
       parts.forEach((el) => tickerTrackEl.appendChild(el.cloneNode(true)));
     }
+    // Exposed so the isolated macro-ticker script's own poll cadence can
+    // trigger a redraw without waiting on a crypto tick to happen to
+    // arrive - purely an extra reference to the same existing function,
+    // no new logic.
+    window.__mktRenderTickerStrip = renderTickerStrip;
 
     function markUnavailable(ticker) {
       if (receivedData[ticker]) return; // already have real data — don't overwrite it
@@ -2514,6 +2544,113 @@
     }
 
     connect();
+  })();
+</script>
+<script>
+  // ---------------------------------------------------------------------
+  // SPY/QQQ macro ticker — ISOLATED PROTOTYPE (Block 3).
+  //
+  // Completely independent of both the Kraken crypto path above and the
+  // Supabase/Grok macro-narrative path (pollGrokData/renderMacro et al.)
+  // elsewhere in this file:
+  //   - own polling loop, own interval, own state object (macroState)
+  //   - makes no WebSocket connection and no direct call to Yahoo
+  //     Finance itself - it only ever reads a static local file
+  //   - never reads/writes grok_data.json, never touches tickerState/
+  //     candleData/receivedData from the blocks above
+  //
+  // Data source: macro_adapter.py (Yahoo Finance) runs as its
+  // own separate process and writes ./macro_data.json on its own
+  // schedule (~30s). This script only reads that file - if the adapter
+  // process isn't running, macro_data.json simply goes stale and this
+  // script treats that exactly like "no data" (see STALE_AFTER_MS below),
+  // never as a reason to show an old value as current.
+  //
+  // LICENSING NOTE: this is a PROTOTYPE market-
+  // data adapter only. Public-display/redistribution rights for Yahoo
+  // Finance data have not been independently verified - do not treat
+  // this as cleared for public/monetized broadcast.
+  //
+  // The only touch point this has on the rest of the page is the single
+  // `window.__mktMacroTickerItems` read inside the crypto ticker-strip's
+  // renderTickerStrip() (see the comment there) - everything else here
+  // is self-contained.
+  (function () {
+    const MACRO_DATA_URL = "./macro_data.json";
+    const POLL_INTERVAL_MS = 10_000;
+    // macro_adapter.py polls Yahoo Finance roughly every 30s - anything older
+    // than this is treated as the adapter process being stalled/down,
+    // not as "the market is simply quiet."
+    const STALE_AFTER_MS = 100_000;
+    const TICKERS = ["SPY", "QQQ"];
+
+    let macroState = {}; // ticker -> { last, changePct } — own object, never shared with tickerState
+
+    async function pollMacroData() {
+      let response;
+      try {
+        response = await fetch(`${MACRO_DATA_URL}?t=${Date.now()}`, { cache: "no-store" });
+      } catch (err) {
+        // Network/read failure - clear state rather than keep showing a
+        // stale value as current (same no-fake-data contract as the
+        // crypto ticker-strip's own markUnavailable()).
+        macroState = {};
+        window.__mktRenderTickerStrip?.();
+        return;
+      }
+      if (!response.ok) {
+        macroState = {};
+        window.__mktRenderTickerStrip?.();
+        return;
+      }
+
+      let data;
+      try {
+        data = await response.json();
+      } catch (err) {
+        macroState = {};
+        window.__mktRenderTickerStrip?.();
+        return;
+      }
+
+      if (!data || typeof data !== "object" || !data.generatedAt) {
+        macroState = {};
+        window.__mktRenderTickerStrip?.();
+        return;
+      }
+
+      const ageMs = Date.now() - new Date(data.generatedAt).getTime();
+      if (!Number.isFinite(ageMs) || ageMs > STALE_AFTER_MS) {
+        macroState = {}; // adapter process looks stalled/down
+        window.__mktRenderTickerStrip?.();
+        return;
+      }
+
+      const instruments = data.instruments || {};
+      const next = {};
+      TICKERS.forEach((ticker) => {
+        const entry = instruments[ticker];
+        if (entry && Number.isFinite(entry.last)) {
+          next[ticker] = { last: entry.last, changePct: entry.changePct };
+        }
+        // else: genuinely omitted from the strip - never a fabricated or
+        // carried-forward value.
+      });
+      macroState = next;
+      window.__mktRenderTickerStrip?.();
+    }
+
+    // Read-only hook consumed by the crypto ticker-strip's
+    // renderTickerStrip() - returns real data or nothing, never a guess.
+    window.__mktMacroTickerItems = () =>
+      TICKERS.filter((t) => macroState[t]).map((t) => ({
+        ticker: t,
+        last: macroState[t].last,
+        changePct: macroState[t].changePct,
+      }));
+
+    pollMacroData();
+    setInterval(pollMacroData, POLL_INTERVAL_MS);
   })();
 </script>
 </body>

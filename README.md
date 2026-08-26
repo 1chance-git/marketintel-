@@ -55,6 +55,30 @@ What happens inside this repo:
    - a market-tape ticker strip covering BTC/ETH/SOL/XRP/BNB via a *separate*
      Kraken `ticker` channel WebSocket connection.
 
+## SPY/QQQ macro ticker (prototype)
+
+[`macro_adapter.py`](macro_adapter.py) is a small, fully isolated prototype
+that polls Yahoo Finance's own public chart endpoint
+(`query1.finance.yahoo.com/v8/finance/chart/{symbol}`, via plain `requests`)
+for SPY/QQQ every ~30s and writes `./macro_data.json` (a sibling to
+`grok_data.json`, not a replacement). `index.html`'s own isolated
+macro-ticker script polls that file and, when real data is present, adds
+SPY/QQQ into the existing bottom ticker strip alongside BTC/ETH/SOL/XRP. It
+shares no state, WebSocket, or process with the Kraken crypto path or the
+Supabase/Grok path.
+
+Run it separately: `npm run macro` (requires `pip install -r
+requirements.txt` first). It is **not** started by `stream_engine.js` and has
+no effect on the live broadcast if it isn't running — the ticker simply omits
+SPY/QQQ, per the same no-fabricated-data rule below. Unit tests covering
+success/failure/timeout/malformed-data handling live in
+[`test_macro_adapter.py`](test_macro_adapter.py) (`python3 -m unittest
+test_macro_adapter.py`).
+
+**Licensing note:** this is a prototype adapter only. Public-display/
+redistribution rights for Yahoo Finance data have not been independently
+verified — this is not cleared for public/monetized broadcast.
+
 ## No fabricated data
 
 This project has a strict rule: **never fabricate market data**. If Kraken
