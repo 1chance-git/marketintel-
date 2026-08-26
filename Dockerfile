@@ -54,4 +54,15 @@ COPY . .
 # retry loop (see main()) and needs no env vars/secrets, so nothing here
 # needs to supervise/restart it - if the container itself stops, the whole
 # process tree (including this background process) is torn down with it.
-CMD ["sh", "-c", "python3 macro_adapter.py & exec node stream_engine.js --live"]
+#
+# `-u` (unbuffered stdout): a real deploy of this CMD without `-u`
+# produced a running stream with zero [MACRO_ADAPTER] log lines ever
+# appearing, despite the build installing python3/python3-requests
+# successfully. Python fully buffers stdout by default when it isn't a
+# TTY (exactly the case for a Docker container's log pipe) - the leading
+# theory is macro_adapter.py's print() output was sitting unflushed
+# rather than the process failing outright, but that couldn't be
+# directly confirmed without container shell access. `-u` forces
+# unbuffered stdout/stderr regardless, which is the correct fix either
+# way and costs nothing.
+CMD ["sh", "-c", "python3 -u macro_adapter.py & exec node stream_engine.js --live"]

@@ -144,6 +144,23 @@ async function transitionBroadcast(accessToken, broadcastId, targetStatus) {
   return res.json();
 }
 
+// Same DELETE call already used for an orphaned failed-bind broadcast
+// above, pulled out into its own helper so tick() below can reuse it for
+// stray pending broadcasts too - a broadcast still sitting in "ready"/
+// "testing" that a PREVIOUS process boot created but the container was
+// replaced/restarted before it ever reached "live". Never used on a
+// "live" broadcast (deleting a live one is not the intended cleanup here
+// and YouTube's own auto-complete/VOD-processing handles those).
+async function deleteBroadcast(accessToken, broadcastId) {
+  const res = await fetchAuthed(`${API_BASE}/liveBroadcasts?id=${encodeURIComponent(broadcastId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    throw new Error(`liveBroadcasts.delete(${broadcastId}) failed: ${res.status} ${await res.text()}`);
+  }
+}
+
 // Finds the account's reusable live stream (the "Default stream key" -
 // same RTMP destination Railway's YOUTUBE_LIVE_URL already points at, so
 // creating a new broadcast here never requires touching that env var).
@@ -519,11 +536,35 @@ export function startAutoPublish({ intervalMs = 20_000 } = {}) {
         return;
       }
 
-      const candidate = bound.find((b) =>
+      const pending = bound.filter((b) =>
         !alreadyLive.has(b.id) &&
         !deferredToAutoStart.has(b.id) &&
         (b.status?.lifeCycleStatus === "ready" || b.status?.lifeCycleStatus === "testing")
       );
+      const candidate = pending[0] || null;
+
+      // Stray cleanup: every OTHER pending broadcast beyond the one
+      // candidate above is dead weight left by a previous process boot
+      // that created/bound a broadcast but was replaced (redeploy, crash
+      // recovery, etc.) before it ever reached "live" - confirmed real:
+      // two redeploys ~15 minutes apart produced two separate stray
+      // "ready"/testing" broadcasts on the channel, neither of which any
+      // earlier tick ever cleaned up. Deleting them here means a normal
+      // restart can no longer accumulate clutter on the channel; it does
+      // NOT touch anything already "live" (that lifecycle is excluded by
+      // the `pending` filter above and left to YouTube's own auto-
+      // complete/VOD-processing).
+      for (const stray of pending.slice(1)) {
+        console.log(`[YOUTUBE_PUBLISH] Cleaning up stray pending broadcast ${stray.id} (lifeCycleStatus=${stray.status?.lifeCycleStatus}) - ${candidate.id} already has this tick's turn`);
+        try {
+          await deleteBroadcast(accessToken, stray.id);
+          console.log(`[YOUTUBE_PUBLISH] Deleted stray broadcast ${stray.id}`);
+        } catch (err) {
+          // Never let a cleanup failure block the real work (transitioning
+          // `candidate` below) - just log and let a later tick retry it.
+          console.error(`[YOUTUBE_PUBLISH] Failed to delete stray broadcast ${stray.id}: ${err.message}`);
+        }
+      }
 
       if (!candidate) {
         // Everything currently bound and pending is a known lost cause
