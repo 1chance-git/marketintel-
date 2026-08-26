@@ -67,11 +67,18 @@ SPY/QQQ into the existing bottom ticker strip alongside BTC/ETH/SOL/XRP. It
 shares no state, WebSocket, or process with the Kraken crypto path or the
 Supabase/Grok path.
 
-Run it separately: `npm run macro` (requires `pip install -r
-requirements.txt` first). It is **not** started by `stream_engine.js` and has
-no effect on the live broadcast if it isn't running — the ticker simply omits
-SPY/QQQ, per the same no-fabricated-data rule below. Unit tests covering
-success/failure/timeout/malformed-data handling live in
+In production (the `Dockerfile`), it's launched as a background co-process
+alongside `node stream_engine.js --live` (`CMD ["sh", "-c", "python3
+macro_adapter.py & exec node stream_engine.js --live"]`) - `exec` hands PID 1
+to node so Railway's shutdown signal still reaches it directly, unchanged
+from before. It is still a fully separate process/state/output file from
+`stream_engine.js` - if it isn't running (e.g. running this repo outside
+Docker), the ticker simply omits SPY/QQQ, per the same no-fabricated-data
+rule below.
+
+For local (non-Docker) use: `npm run macro` (requires `pip install -r
+requirements.txt` first). Unit tests covering success/failure/timeout/
+malformed-data handling live in
 [`test_macro_adapter.py`](test_macro_adapter.py) (`python3 -m unittest
 test_macro_adapter.py`).
 
@@ -109,7 +116,7 @@ Running live requires FFmpeg and Chromium's system libraries to be present
 | `index.html` | The 1280x720 broadcast dashboard rendered/captured by `VideoEngine` |
 | `grok_data.json` | Latest Grok signal, written by `StreamEngine` and polled by `index.html` |
 | `GROK_SIGNAL_SCHEMA.json` | JSON Schema for a Grok signal row, shared contract with the upstream Gmail-to-Supabase bridge |
-| `Dockerfile` | node:22-bookworm-slim + ffmpeg + Chromium system deps, used for deployment |
+| `Dockerfile` | node:22-bookworm-slim + ffmpeg + Chromium system deps + python3/python3-requests (for `macro_adapter.py`), used for deployment |
 
 ## Deployment
 

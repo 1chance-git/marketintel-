@@ -3,6 +3,8 @@ FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     ca-certificates \
+    python3 \
+    python3-requests \
     fonts-liberation \
     fonts-noto-color-emoji \
     libasound2 \
@@ -44,4 +46,12 @@ RUN npm ci --omit=dev
 
 COPY . .
 
-CMD ["node", "stream_engine.js", "--live"]
+# macro_adapter.py (SPY/QQQ, own isolated process/state/output file - see
+# its own header comment) is launched as a background co-process, then
+# `exec` replaces this shell with the node process so node becomes PID 1
+# and still receives Railway's SIGTERM directly for a clean shutdown, same
+# as before this change. macro_adapter.py has its own internal try/except
+# retry loop (see main()) and needs no env vars/secrets, so nothing here
+# needs to supervise/restart it - if the container itself stops, the whole
+# process tree (including this background process) is torn down with it.
+CMD ["sh", "-c", "python3 macro_adapter.py & exec node stream_engine.js --live"]
