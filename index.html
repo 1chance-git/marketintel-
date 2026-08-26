@@ -833,6 +833,26 @@
       <span class="mb-price" id="mb-price-XRP">DATA UNAVAILABLE</span>
       <span class="mb-change mb-unavailable" id="mb-change-XRP">--</span>
     </div>
+    <!-- SPY/QQQ (Yahoo Finance, via the isolated macro-ticker script near
+         the end of this file) - same markup/classes as the crypto cells
+         above so they read as one consistent instrument row, not a
+         bolted-on second design. Populated by the SAME real macroState
+         already powering the bottom ticker strip; still "DATA
+         UNAVAILABLE" by default until real data actually arrives. -->
+    <div class="mb-cell" data-symbol="SPY" id="mb-cell-SPY">
+      <div class="mb-row-top">
+        <span class="mb-ticker">SPY</span>
+      </div>
+      <span class="mb-price" id="mb-price-SPY">DATA UNAVAILABLE</span>
+      <span class="mb-change mb-unavailable" id="mb-change-SPY">--</span>
+    </div>
+    <div class="mb-cell" data-symbol="QQQ" id="mb-cell-QQQ">
+      <div class="mb-row-top">
+        <span class="mb-ticker">QQQ</span>
+      </div>
+      <span class="mb-price" id="mb-price-QQQ">DATA UNAVAILABLE</span>
+      <span class="mb-change mb-unavailable" id="mb-change-QQQ">--</span>
+    </div>
   </div>
 
   <div id="main-area">
@@ -2586,6 +2606,54 @@
 
     let macroState = {}; // ticker -> { last, changePct } — own object, never shared with tickerState
 
+    // Renders SPY/QQQ into the TOP market-board cells (added alongside
+    // BTC/ETH/SOL/XRP for Block 4 - "too small in the bottom ticker at
+    // broadcast resolution") using the exact same classes/format the
+    // crypto cells' own renderAsset() uses (mb-price/mb-change, mb-up/
+    // mb-down/mb-unavailable, mb-unavailable-price, 2-decimal price,
+    // signed 2-decimal %) so these read as one consistent row, not a
+    // second design bolted on. Pure rendering of the same real
+    // macroState the bottom ticker strip already uses - no new data
+    // source, no fabrication: a missing ticker just stays "DATA
+    // UNAVAILABLE" (the static default already in the HTML).
+    function renderTopBoardCells() {
+      TICKERS.forEach((ticker) => {
+        const priceEl = document.getElementById(`mb-price-${ticker}`);
+        const changeEl = document.getElementById(`mb-change-${ticker}`);
+        if (!priceEl || !changeEl) return;
+        const state = macroState[ticker];
+        if (!state) {
+          priceEl.textContent = "DATA UNAVAILABLE";
+          priceEl.classList.add("mb-unavailable-price");
+          changeEl.textContent = "--";
+          changeEl.className = "mb-change mb-unavailable";
+          return;
+        }
+        priceEl.classList.remove("mb-unavailable-price");
+        priceEl.textContent = state.last.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+        if (Number.isFinite(state.changePct)) {
+          const sign = state.changePct > 0 ? "+" : "";
+          changeEl.textContent = `${sign}${state.changePct.toFixed(2)}%`;
+          changeEl.className = "mb-change " + (state.changePct > 0 ? "mb-up" : state.changePct < 0 ? "mb-down" : "");
+        } else {
+          changeEl.textContent = "--";
+          changeEl.className = "mb-change mb-unavailable";
+        }
+      });
+    }
+
+    // Single call site for both consumers of macroState (the bottom
+    // ticker strip via the existing hook, and the top board cells above)
+    // so pollMacroData's several early-return branches below only need
+    // to remember one call, not two.
+    function renderMacroUI() {
+      window.__mktRenderTickerStrip?.();
+      renderTopBoardCells();
+    }
+
     async function pollMacroData() {
       let response;
       try {
@@ -2595,12 +2663,12 @@
         // stale value as current (same no-fake-data contract as the
         // crypto ticker-strip's own markUnavailable()).
         macroState = {};
-        window.__mktRenderTickerStrip?.();
+        renderMacroUI();
         return;
       }
       if (!response.ok) {
         macroState = {};
-        window.__mktRenderTickerStrip?.();
+        renderMacroUI();
         return;
       }
 
@@ -2609,20 +2677,20 @@
         data = await response.json();
       } catch (err) {
         macroState = {};
-        window.__mktRenderTickerStrip?.();
+        renderMacroUI();
         return;
       }
 
       if (!data || typeof data !== "object" || !data.generatedAt) {
         macroState = {};
-        window.__mktRenderTickerStrip?.();
+        renderMacroUI();
         return;
       }
 
       const ageMs = Date.now() - new Date(data.generatedAt).getTime();
       if (!Number.isFinite(ageMs) || ageMs > STALE_AFTER_MS) {
         macroState = {}; // adapter process looks stalled/down
-        window.__mktRenderTickerStrip?.();
+        renderMacroUI();
         return;
       }
 
@@ -2637,7 +2705,7 @@
         // carried-forward value.
       });
       macroState = next;
-      window.__mktRenderTickerStrip?.();
+      renderMacroUI();
     }
 
     // Read-only hook consumed by the crypto ticker-strip's
