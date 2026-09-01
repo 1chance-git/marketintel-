@@ -780,6 +780,59 @@
     pointer-events: none;
     line-height: 16px;
   }
+
+  /* ---------- 7. TRUMP MARKET INTELLIGENCE (Block 5A) ---------- */
+  /* Absolutely positioned within #stage (already position:relative) so
+     this can never affect the existing flex layout/rotator/chart panes in
+     ANY state - [hidden] gives it zero footprint when there's no real
+     trump_signal (the overwhelming majority of the time), and when shown
+     it overlays rather than reflowing anything else. Reuses the same
+     .card/.card-title/.term-rows visual language as the rest of the
+     terminal rather than a new design language. */
+  #trump-banner {
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    bottom: 46px; /* clears the 22px ticker strip + 16px watermark + margin */
+    max-height: 220px;
+    background: #050505;
+    border: 1px solid #3a2a10;
+    border-top: 2px solid #d4914a;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    z-index: 5;
+  }
+
+  #trump-banner .card-title {
+    background: #0a0705;
+  }
+
+  #trump-banner .card-title-label {
+    color: #d4914a;
+  }
+
+  #trump-banner-body {
+    padding: 8px 12px 6px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+
+  #trump-banner .term-rows li {
+    padding: 3px 0;
+  }
+
+  .trump-disclaimer {
+    flex: 0 0 auto;
+    padding: 5px 12px;
+    border-top: 1px solid #1a1a1a;
+    font-size: 8px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #6a6a6a;
+    text-align: center;
+  }
 </style>
 </head>
 <body>
@@ -935,6 +988,25 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- TRUMP MARKET INTELLIGENCE (Block 5A) - additive, informational-only
+       overlay. Absolutely positioned (see CSS) so it has zero effect on
+       any existing panel's layout in any state. `hidden` by default:
+       stays hidden unless index.html's own JS finds a real, well-formed
+       trump_signal on the current polled signal - see renderTrumpSignal()
+       and its isValidTrumpSignal() guard. Never fabricated, never carries
+       over a previous statement once the signal that produced it is gone
+       (renderTrumpSignal always fully replaces or fully hides). -->
+  <div id="trump-banner" hidden>
+    <div class="card-title">
+      <span class="card-title-label">
+        <span class="title-icon" aria-hidden="true">&#128240;</span>
+        TRUMP MARKET INTELLIGENCE
+      </span>
+    </div>
+    <div id="trump-banner-body"></div>
+    <div class="trump-disclaimer">Statement only — not a trade signal, price prediction, or guaranteed market outcome</div>
   </div>
 
   <div id="ticker-strip">
@@ -2152,6 +2224,87 @@
       descriptionTextEl.textContent = lines.slice(0, 4).join(" "); // textContent only — never innerHTML.
     }
 
+    const trumpBannerEl = document.getElementById("trump-banner");
+    const trumpBannerBodyEl = document.getElementById("trump-banner-body");
+    const TRUMP_DIRECTIONS = ["BULLISH", "BEARISH", "MIXED", "UNKNOWN"];
+    const TRUMP_SIGNIFICANCE = ["HIGH", "MEDIUM", "LOW"];
+
+    // Defensive shape validation - trump_signal arrives over the network
+    // (via grok_data.json) and has already been normalized server-side
+    // (supabase_client.js/stream_engine.js), but this file trusts nothing
+    // it reads on its own, same as every other field pollGrokData handles.
+    // A malformed/unexpected shape must never throw or corrupt the
+    // terminal - it just means nothing renders, same "no data beats
+    // fake/broken data" rule used everywhere else in this file.
+    function isValidTrumpSignal(t) {
+      return !!t && typeof t === "object" && !Array.isArray(t) &&
+        typeof t.statement === "string" && t.statement.trim().length > 0 &&
+        typeof t.timestamp === "string" && t.timestamp.length > 0;
+    }
+
+    // Renders the additive Trump Market Intelligence overlay (see
+    // #trump-banner). Reuses the exact same row-building helpers
+    // (makeRowLabelSpan/makeRowValueSpan/directionTone) the rotator's own
+    // ETF/Macro/Narrative/Sentiment slides already use, so this reads as
+    // the same terminal, not a bolted-on second design.
+    //
+    // Intentionally does NOT color-code SIGNIFICANCE or add any "signal
+    // strength" visual treatment beyond DIRECTION's existing up/down/flat
+    // tone (already used identically for the real crypto sentiment
+    // DIRECTION row elsewhere in this file, not something new invented for
+    // Trump) - plus the always-visible disclaimer line in the static HTML
+    // - specifically so this can never read as a buy/sell signal or a
+    // price prediction. Trump said something is not the same claim as the
+    // market will move, which is not the same claim as a trade signal;
+    // this renders only the first of those three.
+    function renderTrumpSignal(trumpSignal) {
+      if (!isValidTrumpSignal(trumpSignal)) {
+        // No real signal (null/missing/malformed) - stay fully hidden.
+        // Never fall back to a previous statement: a fresh render call
+        // with nothing valid always clears whatever was shown before,
+        // so a Trump signal that's no longer present in the polled data
+        // can never linger on screen.
+        trumpBannerEl.hidden = true;
+        trumpBannerBodyEl.textContent = "";
+        return;
+      }
+
+      const direction = TRUMP_DIRECTIONS.includes(trumpSignal.direction) ? trumpSignal.direction : "UNKNOWN";
+      const significance = TRUMP_SIGNIFICANCE.includes(trumpSignal.significance) ? trumpSignal.significance : "LOW";
+      const topic = typeof trumpSignal.topic === "string" && trumpSignal.topic.trim() ? trumpSignal.topic : "—";
+      const assets = Array.isArray(trumpSignal.affected_assets)
+        ? trumpSignal.affected_assets.filter((a) => typeof a === "string" && a.trim())
+        : [];
+      const marketImpact = typeof trumpSignal.market_impact === "string" ? trumpSignal.market_impact.trim() : "";
+      const evidence = typeof trumpSignal.evidence === "string" ? trumpSignal.evidence.trim() : "";
+
+      const list = document.createElement("ul");
+      list.className = "term-rows";
+
+      const addRow = (label, valueText, tone) => {
+        const li = document.createElement("li");
+        li.appendChild(makeRowLabelSpan(label));
+        li.appendChild(makeRowValueSpan(valueText, tone || "flat"));
+        list.appendChild(li);
+      };
+
+      addRow("STATEMENT", truncateText(trumpSignal.statement, 160));
+      addRow("TOPIC", topic === "—" ? topic : topic.toUpperCase());
+      addRow("DIRECTION", direction, directionTone(direction));
+      addRow("SIGNIFICANCE", significance);
+      addRow("AFFECTED", assets.length ? assets.join(", ") : "—");
+      if (marketImpact) addRow("WHY IT MATTERS", truncateText(marketImpact, 160));
+      if (evidence) addRow("EVIDENCE", truncateText(evidence, 120));
+
+      trumpBannerBodyEl.textContent = "";
+      trumpBannerBodyEl.appendChild(list);
+      trumpBannerEl.hidden = false;
+    }
+    // Test-only hook, same pattern as window.__mktFreeze/__mktRenderTickerStrip
+    // elsewhere in this file - not a new data source or API, just an
+    // exposed reference to the function pollGrokData already calls.
+    window.__mktRenderTrumpSignal = renderTrumpSignal;
+
     function renderSentiment(xNarratives, sentiment) {
       const narratives = normalizeArray(xNarratives);
       const tone = normalizeArray(sentiment);
@@ -2202,6 +2355,7 @@
       renderMacro(data.etf_flows, data.system_macro);
       renderSentiment(data.x_narratives, data.sentiment);
       renderDescription(data.etf_flows, data.system_macro, data.x_narratives, data.sentiment);
+      renderTrumpSignal(data.trump_signal);
 
       if (typeof data.timestamp === "string" && data.timestamp) {
         lastSignalTimestamp = data.timestamp;
