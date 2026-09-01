@@ -13,7 +13,7 @@ function normalizeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function normalizeSignal(signal) {
+export function normalizeSignal(signal) {
   return {
     id: signal.id,
     timestamp: signal.timestamp,
@@ -21,6 +21,16 @@ function normalizeSignal(signal) {
     system_macro: normalizeArray(signal.system_macro),
     x_narratives: normalizeArray(signal.x_narratives),
     sentiment: normalizeArray(signal.sentiment),
+    // Optional, informational-only (see GROK_SIGNAL_SCHEMA.json) - already
+    // validated/sanitized by supabase_client.js's normalizeTrumpSignal(),
+    // but defended independently here too (same "each file normalizes its
+    // own inputs rather than trusting a sibling module" habit normalizeArray
+    // above already follows) - never a trading/position signal, and a
+    // non-object/malformed value collapses to null rather than being
+    // passed through as-is.
+    trump_signal: signal.trump_signal && typeof signal.trump_signal === "object" && !Array.isArray(signal.trump_signal)
+      ? signal.trump_signal
+      : null,
   };
 }
 

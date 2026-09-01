@@ -38,6 +38,71 @@
         "type": "string"
       },
       "maxItems": 200
+    },
+    "trump_signal": {
+      "description": "OPTIONAL. Informational only - a captured Trump statement with potential market relevance. Must never be treated as a trading/position signal by any consumer; direction/significance are Grok's own classification of the STATEMENT's tone, not a price prediction. Absent/null on the vast majority of rows (most signals have no associated Trump statement).",
+      "type": ["object", "null"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "const": "Trump"
+        },
+        "timestamp": {
+          "description": "When the statement was made (not when Grok captured it).",
+          "type": "string",
+          "format": "date-time"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "topic": {
+          "type": "string",
+          "enum": [
+            "Federal Reserve / interest rates",
+            "Inflation",
+            "Tariffs / trade",
+            "Taxes / fiscal policy",
+            "Government spending / debt",
+            "Energy / oil",
+            "China",
+            "Canada / Mexico",
+            "Russia / Ukraine",
+            "Iran / Middle East",
+            "Financial markets",
+            "Banks / Wall Street",
+            "Technology / AI",
+            "Crypto / Bitcoin",
+            "Regulation"
+          ]
+        },
+        "market_impact": {
+          "type": "string"
+        },
+        "affected_assets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["BULLISH", "BEARISH", "MIXED", "UNKNOWN"]
+        },
+        "significance": {
+          "type": "string",
+          "enum": ["HIGH", "MEDIUM", "LOW"]
+        },
+        "new_information": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "type": "string"
+        }
+      },
+      "required": ["timestamp", "statement"],
+      "additionalProperties": false
     }
   },
   "required": [
