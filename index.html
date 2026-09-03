@@ -781,52 +781,15 @@
     line-height: 16px;
   }
 
-  /* ---------- 7. TRUMP MARKET INTELLIGENCE (Block 5A) ---------- */
-  /* Absolutely positioned within #stage (already position:relative) so
-     this can never affect the existing flex layout/rotator/chart panes in
-     ANY state - [hidden] gives it zero footprint when there's no real
-     trump_signal (the overwhelming majority of the time), and when shown
-     it overlays rather than reflowing anything else. Reuses the same
-     .card/.card-title/.term-rows visual language as the rest of the
-     terminal rather than a new design language. */
-  #trump-banner {
-    position: absolute;
-    left: 16px;
-    right: 16px;
-    bottom: 46px; /* clears the 22px ticker strip + 16px watermark + margin */
-    max-height: 220px;
-    background: #050505;
-    border: 1px solid #3a2a10;
-    border-top: 2px solid #d4914a;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    z-index: 5;
-  }
-
-  #trump-banner .card-title {
-    background: #0a0705;
-  }
-
-  #trump-banner .card-title-label {
-    color: #d4914a;
-  }
-
-  #trump-banner-body {
-    padding: 8px 12px 6px;
-    overflow-y: auto;
-    min-height: 0;
-  }
-
-  #trump-banner .term-rows li {
-    padding: 3px 0;
-  }
-
+  /* ---------- 7. TRUMP MARKET INTELLIGENCE (Block 5F) ---------- */
+  /* Trump is now one optional slide inside the existing #rotator-body
+     rotation (see slide-trump below) rather than a standalone overlay -
+     it reuses .rotator-slide/.term-rows/.card-body styling entirely, so
+     no dedicated visual system is needed here. The disclaimer line moves
+     inline into the slide's own row content since there is no longer a
+     persistent banner footer to host it. */
   .trump-disclaimer {
-    flex: 0 0 auto;
-    padding: 5px 12px;
-    border-top: 1px solid #1a1a1a;
+    padding: 8px 0 2px;
     font-size: 8px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -972,6 +935,16 @@
             <div class="empty-state" id="whatnow-empty-state">Waiting for market intelligence...</div>
             <ul class="term-rows" id="whatnow-list" hidden></ul>
           </div>
+          <!-- Trump Market Intelligence (Block 5F) - optional rotation slide,
+               only ever included in the active rotation when a valid
+               trump_signal is present (see isValidTrumpSignal/renderTrumpSignal
+               and the activeRotationSlides logic below). No empty-state here:
+               unlike the five slides above, this slide is entirely absent from
+               rotation (never shown, even empty) when there is no real signal. -->
+          <div class="rotator-slide" id="slide-trump" hidden>
+            <ul class="term-rows" id="trump-list"></ul>
+            <div class="trump-disclaimer">Statement only — not a trade signal, price prediction, or guaranteed market outcome</div>
+          </div>
         </div>
       </div>
 
@@ -988,25 +961,6 @@
         </div>
       </div>
     </div>
-  </div>
-
-  <!-- TRUMP MARKET INTELLIGENCE (Block 5A) - additive, informational-only
-       overlay. Absolutely positioned (see CSS) so it has zero effect on
-       any existing panel's layout in any state. `hidden` by default:
-       stays hidden unless index.html's own JS finds a real, well-formed
-       trump_signal on the current polled signal - see renderTrumpSignal()
-       and its isValidTrumpSignal() guard. Never fabricated, never carries
-       over a previous statement once the signal that produced it is gone
-       (renderTrumpSignal always fully replaces or fully hides). -->
-  <div id="trump-banner" hidden>
-    <div class="card-title">
-      <span class="card-title-label">
-        <span class="title-icon" aria-hidden="true">&#128240;</span>
-        TRUMP MARKET INTELLIGENCE
-      </span>
-    </div>
-    <div id="trump-banner-body"></div>
-    <div class="trump-disclaimer">Statement only — not a trade signal, price prediction, or guaranteed market outcome</div>
   </div>
 
   <div id="ticker-strip">
@@ -2224,8 +2178,7 @@
       descriptionTextEl.textContent = lines.slice(0, 4).join(" "); // textContent only — never innerHTML.
     }
 
-    const trumpBannerEl = document.getElementById("trump-banner");
-    const trumpBannerBodyEl = document.getElementById("trump-banner-body");
+    const trumpListEl = document.getElementById("trump-list");
     const TRUMP_DIRECTIONS = ["BULLISH", "BEARISH", "MIXED", "UNKNOWN"];
     const TRUMP_SIGNIFICANCE = ["HIGH", "MEDIUM", "LOW"];
 
@@ -2242,8 +2195,8 @@
         typeof t.timestamp === "string" && t.timestamp.length > 0;
     }
 
-    // Renders the additive Trump Market Intelligence overlay (see
-    // #trump-banner). Reuses the exact same row-building helpers
+    // Renders the Trump Market Intelligence rotation slide (see
+    // slide-trump/#trump-list). Reuses the exact same row-building helpers
     // (makeRowLabelSpan/makeRowValueSpan/directionTone) the rotator's own
     // ETF/Macro/Narrative/Sentiment slides already use, so this reads as
     // the same terminal, not a bolted-on second design.
@@ -2257,15 +2210,23 @@
     // price prediction. Trump said something is not the same claim as the
     // market will move, which is not the same claim as a trade signal;
     // this renders only the first of those three.
+    //
+    // Whether Trump is actually included in the rotation right now is
+    // controlled separately by setTrumpActive() (defined alongside the
+    // rest of the rotation logic below) - this function only ever
+    // populates/clears #trump-list's content, exactly like renderMacro/
+    // renderSentiment only ever populate their own slides' content.
     function renderTrumpSignal(trumpSignal) {
-      if (!isValidTrumpSignal(trumpSignal)) {
-        // No real signal (null/missing/malformed) - stay fully hidden.
-        // Never fall back to a previous statement: a fresh render call
-        // with nothing valid always clears whatever was shown before,
-        // so a Trump signal that's no longer present in the polled data
-        // can never linger on screen.
-        trumpBannerEl.hidden = true;
-        trumpBannerBodyEl.textContent = "";
+      const valid = isValidTrumpSignal(trumpSignal);
+      setTrumpActive(valid);
+
+      if (!valid) {
+        // No real signal (null/missing/malformed) - clear any previously
+        // rendered content. Never fall back to a previous statement: a
+        // fresh render call with nothing valid always clears whatever was
+        // shown before, so a Trump signal that's no longer present in the
+        // polled data can never linger on screen.
+        trumpListEl.textContent = "";
         return;
       }
 
@@ -2296,9 +2257,8 @@
       if (marketImpact) addRow("WHY IT MATTERS", truncateText(marketImpact, 160));
       if (evidence) addRow("EVIDENCE", truncateText(evidence, 120));
 
-      trumpBannerBodyEl.textContent = "";
-      trumpBannerBodyEl.appendChild(list);
-      trumpBannerEl.hidden = false;
+      trumpListEl.textContent = "";
+      trumpListEl.appendChild(list);
     }
     // Test-only hook, same pattern as window.__mktFreeze/__mktRenderTickerStrip
     // elsewhere in this file - not a new data source or API, just an
@@ -2384,14 +2344,37 @@
       { slideId: "slide-sentiment", title: "Market Sentiment", icon: "\u{1F4CA}" },
       { slideId: "slide-whatnow", title: "What Matters Now", icon: "\u{26A1}" },
     ];
+    // Trump (Block 5F) is not one of the fixed five - it's the one
+    // optional entry that's added to/removed from the active rotation
+    // list below based on trump_signal validity, never a slide of its own
+    // permanent rotation. The five fixed slides above are left completely
+    // untouched by this - they are never conditionally included.
+    const TRUMP_SLIDE = { slideId: "slide-trump", title: "Trump Market Intelligence", icon: "\u{1F4F0}" };
     const ROTATION_INTERVAL_MS = 10000;
     const ROTATION_FADE_MS = 200;
 
     const rotatorIconEl = document.getElementById("rotator-icon");
     const rotatorTitleTextEl = document.getElementById("rotator-title-text");
     const rotatorBodyEl = document.getElementById("rotator-body");
-    const rotationSlideEls = ROTATION_SLIDES.map((s) => document.getElementById(s.slideId));
+    // Every possible slide element, fixed five + Trump - used only to make
+    // sure a slide that just left the active rotation (Trump going from
+    // valid to null) is actually hidden, since it's no longer in
+    // activeRotationSlides for showRotatorSlide's own hide/show loop to
+    // reach.
+    const ALL_ROTATION_SLIDE_DEFS = ROTATION_SLIDES.concat([TRUMP_SLIDE]);
+    const allSlideElsById = {};
+    ALL_ROTATION_SLIDE_DEFS.forEach((s) => {
+      allSlideElsById[s.slideId] = document.getElementById(s.slideId);
+    });
 
+    // The list actually being rotated through right now - starts as just
+    // the fixed five; Trump is appended only while a valid trump_signal is
+    // present (see setTrumpActive below). This is the "smallest possible
+    // mechanism for determining the active rotation list" called for by
+    // the design: one extra array + one boolean flag, no rewrite of the
+    // rotation mechanism itself.
+    let activeRotationSlides = ROTATION_SLIDES.slice();
+    let trumpActive = false;
     let rotatorIndex = 0;
 
     function showRotatorSlide(index) {
@@ -2403,20 +2386,46 @@
       // backward or skip a slide instead of continuing forward from the
       // slide a caller just forced into view).
       rotatorIndex = index;
-      rotationSlideEls.forEach((el, i) => {
-        el.hidden = i !== index;
+      const activeDef = activeRotationSlides[index];
+      Object.keys(allSlideElsById).forEach((slideId) => {
+        allSlideElsById[slideId].hidden = !activeDef || slideId !== activeDef.slideId;
       });
-      rotatorIconEl.textContent = ROTATION_SLIDES[index].icon;
-      rotatorTitleTextEl.textContent = ROTATION_SLIDES[index].title;
+      if (!activeDef) return; // defensive only - activeRotationSlides always has the fixed five.
+      rotatorIconEl.textContent = activeDef.icon;
+      rotatorTitleTextEl.textContent = activeDef.title;
     }
 
     function advanceRotator() {
       rotatorBodyEl.classList.add("rotator-fade");
       setTimeout(() => {
-        rotatorIndex = (rotatorIndex + 1) % ROTATION_SLIDES.length;
+        rotatorIndex = (rotatorIndex + 1) % activeRotationSlides.length;
         showRotatorSlide(rotatorIndex);
         rotatorBodyEl.classList.remove("rotator-fade");
       }, ROTATION_FADE_MS);
+    }
+
+    // Adds/removes Trump from activeRotationSlides. Called only from
+    // renderTrumpSignal (itself only called from the existing
+    // pollGrokData cycle) - no new polling/timer is introduced here, this
+    // just reacts to the trump_signal value pollGrokData already has.
+    //
+    // Index safety: activeRotationSlides can change length (5 <-> 6)
+    // between polls, which happens completely independently of
+    // advanceRotator's own 10s tick. Rather than leaving rotatorIndex
+    // pointing at a now-wrong slot (which could show a blank/wrong slide
+    // or skip/duplicate one on the next tick), this re-resolves whichever
+    // slide was actually on screen by slideId in the new list and re-shows
+    // it immediately. If that slide no longer exists (only possible if
+    // Trump itself was the one showing and just got deactivated), it
+    // safely falls back to index 0 rather than leaving a blank/stale state.
+    function setTrumpActive(active) {
+      if (active === trumpActive) return;
+      const currentSlideId = (activeRotationSlides[rotatorIndex] || {}).slideId;
+      trumpActive = active;
+      activeRotationSlides = active ? ROTATION_SLIDES.concat([TRUMP_SLIDE]) : ROTATION_SLIDES.slice();
+      let newIndex = activeRotationSlides.findIndex((s) => s.slideId === currentSlideId);
+      if (newIndex === -1) newIndex = 0;
+      showRotatorSlide(newIndex);
     }
 
     showRotatorSlide(rotatorIndex);
@@ -2442,7 +2451,7 @@
     // Returns null if the visible slide has no real content row yet
     // (empty state showing instead).
     window.__mktRotatorTightRect = () => {
-      const visibleSlide = rotationSlideEls.find((el) => !el.hidden);
+      const visibleSlide = Object.values(allSlideElsById).find((el) => !el.hidden);
       if (!visibleSlide) return null;
       const listEl = visibleSlide.querySelector("ul.term-rows");
       if (!listEl || listEl.hidden) return null;
