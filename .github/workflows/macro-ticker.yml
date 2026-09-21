@@ -1,0 +1,85 @@
+name: Macro ticker (SPY/QQQ)
+
+# Replaces the always-on macro_adapter.py co-process that used to run
+# inside the Railway Dockerfile alongside stream_engine.js's VideoEngine.
+# Now that this repo deploys as static GitHub Pages (no live broadcast,
+# no long-running Node/Python process), this workflow instead runs
+# macro_adapter.py's existing poll_once() a single time per scheduled run
+# and commits the resulting macro_data.json back to the repo, so the
+# static site always has a reasonably fresh file to serve. macro_adapter.py
+# itself is untouched - this only calls the same function it always
+# exposed, from a different (external, scheduled) caller.
+#
+# Cron cadence: */15 rather than the originally-considered */5. SPY/QQQ
+# are only shown as a small supplementary ticker for short-form video
+# capture, not a live trading feed, so 15-minute freshness is more than
+# enough - and it cuts Actions minutes usage to a third of */5 (this
+# matters if this repo is/becomes private: GitHub's free tier is 2,000
+# Actions minutes/month for private repos, unlimited for public ones;
+# */5 here would burn on the order of 8,000+ min/month, */15 roughly a
+# third of that). Easy to tighten back to */5 later if 15-minute staleness
+# ever actually matters for a specific capture.
+#
+# Note: GitHub disables a repo's scheduled workflows automatically after
+# 60 days with no repository activity - if macro_data.json stops updating
+# after a long-idle period, re-enable this workflow (or push any commit)
+# to resume it.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write  # only permission needed: commit the updated macro_data.json back to this repo
+
+concurrency:
+  group: macro-ticker
+  cancel-in-progress: false
+
+jobs:
+  update-macro-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Preserve previous macro_data.json for comparison
+        run: |
+          if [ -f macro_data.json ]; then
+            cp macro_data.json /tmp/macro_data.prev.json
+          fi
+
+      - name: Run macro_adapter.py poll_once()
+        run: python3 -c "from macro_adapter import poll_once; poll_once()"
+
+      - name: Commit macro_data.json if the actual data changed
+        run: |
+          # macro_adapter.py's payload always includes a fresh "generatedAt"
+          # timestamp (see poll_once() in macro_adapter.py) - a plain
+          # byte/git diff on the whole file would therefore report
+          # "changed" on every single run even when the real SPY/QQQ data
+          # (instruments/marketSession) is identical, defeating the point
+          # of a no-op check entirely (every 15-minute run would commit).
+          # See .github/scripts/compare_macro_data.py for the actual
+          # comparison (ignores generatedAt).
+          if ! python3 .github/scripts/compare_macro_data.py /tmp/macro_data.prev.json macro_data.json; then
+            echo "macro_data.json: no meaningful change (instruments/marketSession identical) - nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add macro_data.json
+          git commit -m "chore: update macro_data.json [skip ci]"
+          # In case main advanced since checkout (e.g. a manual commit
+          # landed mid-run) - rebase this single-file commit on top rather
+          # than letting a straight push get rejected.
+          git pull --rebase origin main
+          git push
