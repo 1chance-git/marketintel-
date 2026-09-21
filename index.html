@@ -1729,14 +1729,124 @@
     connect();
   })();
 </script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
-  // Grok/sentiment data display — reads ./grok_data.json on a 5s poll.
+  // Grok/sentiment data display — reads directly from Supabase on a 5s
+  // poll (Block: static GitHub Pages migration). Previously read a
+  // server-written ./grok_data.json produced by stream_engine.js's
+  // Supabase polling loop; that Node process no longer runs once this
+  // deploys as static Pages, so this file now queries Supabase itself
+  // using the same read-only anon key already public in
+  // supabase_client.js (RLS restricts it to SELECT on grok_signals only,
+  // so it is exactly as safe client-side as it was server-side).
+  //
+  // fetchLatestGrokSignal()/mergeGrokSlots()/normalizeTrumpSignal() below
+  // are a direct line-for-line port of supabase_client.js's own
+  // functions of the same name - kept behaviorally identical on purpose
+  // so the rendered dashboard doesn't drift from what that file already
+  // implements and its own tests (test_trump_signal.mjs) cover. If
+  // supabase_client.js's merge/normalize logic ever changes, this copy
+  // needs the same change made here too.
+  //
   // Does not touch the Kraken WebSocket/chart logic above, and does not
   // reload the page or refresh the layout.
 
   (function () {
     const POLL_INTERVAL_MS = 5000;
-    const DATA_URL = "./grok_data.json";
+    const SUPABASE_URL = "https://zzscfmnqgccuwcfpicob.supabase.co";
+    const SUPABASE_ANON_KEY =
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp6c2NmbW5xZ2NjdXdjZnBpY29iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2MDI1MTMsImV4cCI6MjEwMDE3ODUxM30.ahbBjwtB_g08FyiFFndSz7uWUqZnNdO7m59BzsyyiAM";
+    const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    function normalizeArray(value) {
+      return Array.isArray(value) ? value : [];
+    }
+
+    // Ported verbatim from supabase_client.js's normalizeTrumpSignal() -
+    // see that file for the full rationale comment. Keep in sync with it.
+    const TRUMP_DIRECTIONS_RAW = new Set(["BULLISH", "BEARISH", "MIXED", "UNKNOWN"]);
+    const TRUMP_SIGNIFICANCE_RAW = new Set(["HIGH", "MEDIUM", "LOW"]);
+    function normalizeTrumpSignal(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      const { source, timestamp, statement, topic, market_impact, affected_assets, direction, significance, new_information, evidence } = value;
+
+      if (typeof statement !== "string" || !statement.trim()) return null;
+      if (typeof timestamp !== "string" || Number.isNaN(Date.parse(timestamp))) return null;
+
+      return {
+        source: typeof source === "string" && source.trim() ? source : "Trump",
+        timestamp,
+        statement,
+        topic: typeof topic === "string" ? topic : null,
+        market_impact: typeof market_impact === "string" ? market_impact : null,
+        affected_assets: Array.isArray(affected_assets) ? affected_assets.filter((a) => typeof a === "string") : [],
+        direction: TRUMP_DIRECTIONS_RAW.has(direction) ? direction : "UNKNOWN",
+        significance: TRUMP_SIGNIFICANCE_RAW.has(significance) ? significance : "LOW",
+        new_information: typeof new_information === "boolean" ? new_information : false,
+        evidence: typeof evidence === "string" ? evidence : null,
+      };
+    }
+
+    // Ported verbatim from supabase_client.js's mergeGrokSlots() - see
+    // that file for the full rationale comment. Keep in sync with it.
+    function mergeGrokSlots(rawRows) {
+      if (!rawRows || rawRows.length === 0) {
+        return null;
+      }
+
+      const rows = rawRows.map((row) => ({
+        id: row.id,
+        timestamp: row.timestamp,
+        etf_flows: normalizeArray(row.etf_flows),
+        system_macro: normalizeArray(row.system_macro),
+        x_narratives: normalizeArray(row.x_narratives),
+        sentiment: normalizeArray(row.sentiment),
+        trump_signal: normalizeTrumpSignal(row.trump_signal),
+      }));
+
+      const slotA = rows.find((row) => row.etf_flows.length > 0 || row.system_macro.length > 0) ?? null;
+      const slotB = rows.find((row) => row.x_narratives.length > 0 || row.sentiment.length > 0) ?? null;
+      const slotC = rows.find((row) => row.trump_signal !== null) ?? null;
+
+      if (!slotA && !slotB && !slotC) {
+        return null;
+      }
+      if (!slotA) console.error(`[SUPABASE] fetchLatestGrokSignal: no Slot A row found in the latest ${rows.length} rows`);
+      if (!slotB) console.error(`[SUPABASE] fetchLatestGrokSignal: no Slot B row found in the latest ${rows.length} rows`);
+
+      const foundSlots = [slotA, slotB, slotC].filter(Boolean);
+      const timestamp = foundSlots.reduce((latest, s) => (s.timestamp > latest ? s.timestamp : latest), foundSlots[0].timestamp);
+
+      return {
+        id: `${slotA?.id ?? "none"}-${slotB?.id ?? "none"}-${slotC?.id ?? "none"}`,
+        timestamp,
+        etf_flows: slotA?.etf_flows ?? [],
+        system_macro: slotA?.system_macro ?? [],
+        x_narratives: slotB?.x_narratives ?? [],
+        sentiment: slotB?.sentiment ?? [],
+        trump_signal: slotC?.trump_signal ?? null,
+      };
+    }
+
+    // Ported verbatim from supabase_client.js's fetchLatestGrokSignal() -
+    // see that file for the full rationale comment (row-window sizing,
+    // slot semantics). Keep in sync with it.
+    async function fetchLatestGrokSignal() {
+      const { data, error } = await supabaseClient
+        .from("grok_signals")
+        .select("id, timestamp, etf_flows, system_macro, x_narratives, sentiment, trump_signal")
+        .order("timestamp", { ascending: false })
+        .limit(200);
+
+      if (error) {
+        throw new Error(
+          `fetchLatestGrokSignal: Supabase query failed (code=${error.code ?? "unknown"}, ` +
+            `message=${error.message}, details=${error.details ?? "none"}, hint=${error.hint ?? "none"})`
+        );
+      }
+
+      return mergeGrokSlots(data);
+    }
 
     const macroEtfEmptyEl = document.getElementById("macro-etf-empty");
     const macroEtfListEl = document.getElementById("macro-etf-list");
@@ -2280,23 +2390,12 @@
     }
 
     async function pollGrokData() {
-      let response;
-      try {
-        response = await fetch(`${DATA_URL}?t=${Date.now()}`, { cache: "no-store" });
-      } catch (err) {
-        // Network/read failure — leave current display intact, try again next cycle.
-        return;
-      }
-
-      if (!response.ok) {
-        return;
-      }
-
       let data;
       try {
-        data = await response.json();
+        data = await fetchLatestGrokSignal();
       } catch (err) {
-        // Malformed JSON — ignore this cycle, keep previous valid display.
+        // Network/query failure — leave current display intact, try again next cycle.
+        console.error("[SUPABASE]", err && err.message ? err.message : err);
         return;
       }
 

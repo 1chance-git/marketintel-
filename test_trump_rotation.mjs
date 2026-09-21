@@ -8,20 +8,33 @@
 // pollGrokData already does internally, and asserts on real rendered DOM
 // state rather than re-implementing the rotation logic in the test.
 //
-// No network/Supabase/stream_engine involved - this only exercises
-// index.html's own client-side JS, loaded via file://.
+// The rotator/Trump script block now creates a real Supabase client
+// (window.supabase.createClient(...)) at load time as part of the
+// GitHub-Pages-migration change that made index.html query Supabase
+// directly - that call must not throw synchronously, or the entire IIFE
+// (including __mktRenderTrumpSignal/__mktRotatorGoTo, which this test
+// depends on) never finishes defining. So a local copy of the real
+// @supabase/supabase-js UMD build (already a project dependency, used
+// server-side by supabase_client.js) is served in place of the CDN
+// script - this keeps the test hermetic/offline without stubbing out
+// index.html's own code.
 //
 // Run: node --test test_trump_rotation.mjs
 // -----------------------------------------------------------------------
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INDEX_HTML_PATH = path.join(__dirname, "index.html");
+const SUPABASE_UMD_SRC = fs.readFileSync(
+  path.join(__dirname, "node_modules/@supabase/supabase-js/dist/umd/supabase.js"),
+  "utf8"
+);
 
 const VALID_TRUMP = {
   source: "Trump",
@@ -45,21 +58,24 @@ async function withPage(run) {
   });
   try {
     const page = await browser.newPage();
-    // Block every network request: index.html's own grok_data.json/
-    // macro_data.json polling, the external chart-library CDN script, and
-    // the Kraken WebSocket are all irrelevant here - this test only
-    // exercises the rotator/Trump script block (a separate, independent
-    // IIFE further down index.html that never references the chart's own
-    // candle/WebSocket state), so a sandboxed/offline test run must not
-    // depend on reaching any real network endpoint to validate Trump's
-    // rotation behavior via the exposed __mkt* test hooks directly.
+    // Block every other network request: index.html's own macro_data.json
+    // polling, the chart-library CDN script, the Kraken WebSocket, and any
+    // real Supabase REST call are all irrelevant here - this test drives
+    // rendering directly via the exposed __mkt* test hooks, never through
+    // a real poll. The @supabase/supabase-js CDN script is the one
+    // exception, served locally (see SUPABASE_UMD_SRC above) so the
+    // createClient() call at script load time succeeds instead of
+    // throwing and aborting the whole IIFE.
     await page.setRequestInterception(true);
     page.on("request", (req) => {
       // Let the top-level index.html navigation itself through - only
-      // block the page's own subresource requests (CDN script, JSON
-      // polling, WebSocket upgrade) so the document (and both its
-      // independent inline <script> IIFEs) still loads and parses.
+      // intercept the page's own subresource requests so the document
+      // (and both its independent inline <script> IIFEs) still loads and
+      // parses.
       if (req.isNavigationRequest() && req.frame() === page.mainFrame()) return req.continue();
+      if (req.url().includes("supabase-js")) {
+        return req.respond({ status: 200, contentType: "application/javascript", body: SUPABASE_UMD_SRC });
+      }
       req.respond({ status: 404, body: "" });
     });
     await page.goto(`file://${INDEX_HTML_PATH}`, { waitUntil: "load" });
